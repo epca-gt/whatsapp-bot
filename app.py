@@ -39,16 +39,80 @@ def receive_message():
             from_number = message["from"]
 
             if message["type"] == "text":
-                user_text = message["text"]["body"]
-
-                reply_text = f"Recibí tu mensaje: {user_text}"
-
+                user_text = message["text"]["body"].strip().lower()
+                reply_text = get_bot_response(user_text)
                 send_whatsapp_message(from_number, reply_text)
 
     except Exception as e:
         print("Error procesando mensaje:", e)
 
     return jsonify({"status": "ok"}), 200
+
+
+def get_bot_response(user_text: str) -> str:
+    saludos = ["hola", "buenas", "buenos dias", "buenas tardes", "buenas noches", "menu", "menú", "inicio", "start"]
+
+    if user_text in saludos:
+        return (
+            "Bienvenido a Importadora Los Gemelos 🚗\n\n"
+            "Escribe una opción:\n"
+            "1️⃣ Ver vehículos disponibles\n"
+            "2️⃣ Buscar por marca\n"
+            "3️⃣ Cotizar importación\n"
+            "4️⃣ Hablar con asesor"
+        )
+
+    if user_text == "1":
+        return (
+            "Vehículos disponibles actualmente:\n\n"
+            "• Toyota Tacoma 2021\n"
+            "• Mazda CX-5 2022\n"
+            "• Ford Ranger 2020\n\n"
+            "Escribe *menu* para volver al menú principal."
+        )
+
+    if user_text == "2":
+        return (
+            "Escribe la marca que buscas.\n\n"
+            "Ejemplos:\n"
+            "• Toyota\n"
+            "• Mazda\n"
+            "• Ford\n\n"
+            "Escribe *menu* para volver al menú principal."
+        )
+
+    if user_text in ["toyota", "mazda", "ford", "honda", "nissan", "chevrolet"]:
+        return (
+            f"Resultados para la marca *{user_text.title()}*:\n\n"
+            f"Por ahora esta búsqueda está en modo demo.\n"
+            f"En el siguiente paso la conectaremos al inventario real.\n\n"
+            f"Escribe *menu* para volver al menú principal."
+        )
+
+    if user_text == "3":
+        return (
+            "Para cotizar importación, envíanos:\n\n"
+            "• Marca\n"
+            "• Modelo\n"
+            "• Año aproximado\n"
+            "• Presupuesto\n\n"
+            "Ejemplo:\n"
+            "Toyota Tacoma 2021, presupuesto Q180,000"
+        )
+
+    if user_text == "4":
+        return (
+            "Un asesor te atenderá en breve. 👨‍💼\n\n"
+            "Mientras tanto, puedes escribir:\n"
+            "• 1 para ver vehículos disponibles\n"
+            "• 2 para buscar por marca\n"
+            "• 3 para cotizar importación"
+        )
+
+    return (
+        "No entendí tu mensaje.\n\n"
+        "Escribe *menu* para ver las opciones disponibles."
+    )
 
 
 def send_whatsapp_message(to_number, message_text):
