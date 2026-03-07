@@ -21,19 +21,20 @@ LEADS_WEBHOOK_URL = "https://script.google.com/macros/s/AKfycbwN7uG2ft37ALx9A736
 WHATSAPP_API_URL = f"https://graph.facebook.com/v20.0/{PHONE_NUMBER_ID}/messages"
 
 # =========================
-# Configuración simple
+# Configuración
 # =========================
 REQUEST_TIMEOUT = 15
-INVENTORY_CACHE_TTL = 60  # segundos
-PROCESSED_MESSAGE_TTL = 600  # 10 minutos
-USER_SESSION_TTL = 1800  # 30 minutos
+INVENTORY_CACHE_TTL = 300      # 5 minutos
+PROCESSED_MESSAGE_TTL = 600    # 10 minutos
+USER_SESSION_TTL = 1800        # 30 minutos
 
 # =========================
-# Memoria simple en RAM
+# Memoria en RAM
 # =========================
 inventory_cache = {
     "data": [],
-    "timestamp": 0
+    "timestamp": 0,
+    "last_success": 0
 }
 
 processed_messages = {}  # {message_id: timestamp}
@@ -93,18 +94,13 @@ def clear_user_state(phone: str):
 
 
 # =========================
-# Inventario
+# Inventario en memoria
 # =========================
-def obtener_inventario(force_refresh=False):
-    current = now_ts()
-
-    if (
-        not force_refresh
-        and inventory_cache["data"]
-        and current - inventory_cache["timestamp"] < INVENTORY_CACHE_TTL
-    ):
-        return inventory_cache["data"]
-
+def refrescar_inventario():
+    """
+    Fuerza actualización del inventario desde OpenSheet.
+    Si falla, conserva la copia anterior en memoria.
+    """
     try:
         response = requests.get(SHEET_URL, timeout=REQUEST_TIMEOUT)
         response.raise_for_status()
@@ -112,13 +108,39 @@ def obtener_inventario(force_refresh=False):
 
         if isinstance(data, list):
             inventory_cache["data"] = data
-            inventory_cache["timestamp"] = current
+            inventory_cache["timestamp"] = now_ts()
+            inventory_cache["last_success"] = now_ts()
+            print(f"Inventario actualizado. Registros: {len(data)}")
             return data
 
-        return []
+        print("Respuesta de inventario inválida.")
+        return inventory_cache["data"]
+
     except Exception as e:
-        print("Error obteniendo inventario:", e)
-        return inventory_cache["data"] if inventory_cache["data"] else []
+        print("Error refrescando inventario:", e)
+        return inventory_cache["data"]
+
+
+def obtener_inventario(force_refresh=False):
+    """
+    Devuelve inventario desde memoria.
+    Solo consulta OpenSheet si:
+    - no hay datos cargados
+    - expiró el TTL
+    - force_refresh=True
+    """
+    current = now_ts()
+
+    if force_refresh:
+        return refrescar_inventario()
+
+    if not inventory_cache["data"]:
+        return refrescar_inventario()
+
+    if current - inventory_cache["timestamp"] > INVENTORY_CACHE_TTL:
+        return refrescar_inventario()
+
+    return inventory_cache["data"]
 
 
 def obtener_marcas_disponibles():
@@ -137,11 +159,11 @@ def obtener_marcas_disponibles():
 
 def buscar_marca_en_texto(user_text: str):
     """
-    Busca coincidencia flexible de marca dentro del texto.
+    Detecta marcas aunque el usuario escriba texto adicional.
     Ejemplos:
-    - 'toyota'
-    - 'quiero toyota'
-    - 'busco mazda'
+    - toyota
+    - quiero toyota
+    - busco mazda
     """
     user_text_norm = normalize_text(user_text)
     marcas = obtener_marcas_disponibles()
@@ -149,12 +171,12 @@ def buscar_marca_en_texto(user_text: str):
     if not user_text_norm:
         return None
 
-    # Coincidencia exacta
+    # Exacta
     for marca in marcas:
         if normalize_text(marca) == user_text_norm:
             return marca
 
-    # Coincidencia contenida
+    # Contenida en el texto
     for marca in marcas:
         marca_norm = normalize_text(marca)
         if marca_norm in user_text_norm:
@@ -207,7 +229,7 @@ def guardar_lead(telefono: str, mensaje: str, tipo: str):
 
 
 # =========================
-# WhatsApp send helpers
+# Envío WhatsApp
 # =========================
 def send_whatsapp_payload(payload: dict):
     headers = {
@@ -299,7 +321,6 @@ def send_brand_list_menu(to_number: str):
         )
         return
 
-    # WhatsApp list soporta hasta 10 rows por sección.
     rows = []
     for marca in marcas[:10]:
         rows.append({
@@ -375,11 +396,14 @@ def send_vehicle_messages(to_number: str, carros: list, marca_mostrada: str):
         mensaje = "\n".join([p for p in partes if p])
         send_whatsapp_message(to_number, mensaje)
 
-    send_whatsapp_message(to_number, "Escribe *menu* para volver al menú principal o *asesor* para hablar con un vendedor.")
+    send_whatsapp_message(
+        to_number,
+        "Escribe *menu* para volver al menú principal o *asesor* para hablar con un vendedor."
+    )
 
 
 # =========================
-# Respuestas del bot
+# Lógica del bot
 # =========================
 def build_advisor_link():
     text = quote("Hola vengo del bot de Importadora Los Gemelos")
@@ -489,20 +513,17 @@ def handle_text_message(from_number: str, user_text_raw: str):
         responder_asesor(from_number)
         return
 
-    # Si el usuario estaba en modo búsqueda de marca
     if state == "awaiting_brand":
         marca_detectada = buscar_marca_en_texto(user_text)
         if marca_detectada:
             manejar_marca(from_number, marca_detectada)
             return
 
-    # Aun si no está en estado de búsqueda, intentamos detectar marca
     marca_detectada = buscar_marca_en_texto(user_text)
     if marca_detectada:
         manejar_marca(from_number, marca_detectada)
         return
 
-    # Si el usuario está cotizando importación, guardamos texto libre como lead
     if state == "awaiting_import_quote":
         guardar_lead(from_number, user_text_raw, "detalle_cotizacion")
         clear_user_state(from_number)
@@ -565,11 +586,20 @@ def handle_interactive_message(from_number: str, interactive: dict):
 
 
 # =========================
-# Flask routes
+# Rutas Flask
 # =========================
 @app.route("/", methods=["GET"])
 def home():
     return "Bot activo", 200
+
+
+@app.route("/refresh-inventory", methods=["GET"])
+def refresh_inventory_route():
+    data = refrescar_inventario()
+    return jsonify({
+        "status": "ok",
+        "items": len(data)
+    }), 200
 
 
 @app.route("/webhook", methods=["GET"])
@@ -606,7 +636,6 @@ def receive_message():
         if not from_number:
             return jsonify({"status": "ok_no_from"}), 200
 
-        # Anti-duplicado con TTL
         if message_id:
             if message_id in processed_messages:
                 print("Mensaje duplicado ignorado:", message_id)
@@ -631,5 +660,10 @@ def receive_message():
 
 
 if __name__ == "__main__":
+    try:
+        refrescar_inventario()
+    except Exception as e:
+        print("No se pudo precargar inventario al iniciar:", e)
+
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
