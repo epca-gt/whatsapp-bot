@@ -515,10 +515,11 @@ def handle_text_message(from_number: str, user_text_raw: str):
         responder_asesor(from_number)
         return
 
-    # Si el usuario escribe solo números, intentamos como ID
-    if user_text.isdigit():
-        responder_precio_por_id(from_number, user_text)
-        return
+    # Intentar interpretar el mensaje como ID de vehículo
+    carro = buscar_carro_por_id(user_text_raw.strip())
+    if carro:
+        responder_precio_por_id(from_number, user_text_raw.strip())
+    return
 
     if state in {"awaiting_brand", "awaiting_brand_or_id"}:
         marca_detectada = buscar_marca_en_texto(user_text)
