@@ -1,6 +1,7 @@
 from flask import Flask, request, jsonify
 import requests
 import os
+import json
 from datetime import datetime
 
 app = Flask(__name__)
@@ -31,8 +32,21 @@ def guardar_lead(telefono: str, mensaje: str, tipo: str):
             "mensaje": mensaje,
             "tipo": tipo
         }
-        response = requests.post(LEADS_WEBHOOK_URL, json=payload, timeout=15)
-        print("Lead guardado:", response.status_code, response.text)
+
+        headers = {
+            "Content-Type": "application/json"
+        }
+
+        response = requests.post(
+            LEADS_WEBHOOK_URL,
+            headers=headers,
+            data=json.dumps(payload),
+            timeout=15
+        )
+
+        print("Lead guardado:", response.status_code)
+        print("Respuesta Apps Script:", response.text)
+
     except Exception as e:
         print("Error guardando lead:", e)
 
