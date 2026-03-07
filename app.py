@@ -9,6 +9,7 @@ app = Flask(__name__)
 VERIFY_TOKEN = os.getenv("VERIFY_TOKEN")
 WHATSAPP_TOKEN = os.getenv("WHATSAPP_TOKEN")
 PHONE_NUMBER_ID = os.getenv("PHONE_NUMBER_ID")
+
 ADMIN_PHONE = "50230306187"
 
 SHEET_URL = "https://opensheet.elk.sh/1opEhxT7aat4GnVAEBcPqze84TSZMO3W-ji2jyHP8HZc/Sheet1"
@@ -50,6 +51,37 @@ def guardar_lead(telefono: str, mensaje: str, tipo: str):
 
     except Exception as e:
         print("Error guardando lead:", e)
+
+
+def send_whatsapp_message(to_number, message_text):
+    url = f"https://graph.facebook.com/v20.0/{PHONE_NUMBER_ID}/messages"
+
+    headers = {
+        "Authorization": f"Bearer {WHATSAPP_TOKEN}",
+        "Content-Type": "application/json"
+    }
+
+    payload = {
+        "messaging_product": "whatsapp",
+        "to": to_number,
+        "type": "text",
+        "text": {
+            "body": message_text
+        }
+    }
+
+    response = requests.post(url, headers=headers, json=payload)
+    print(response.status_code, response.text)
+
+
+def notificar_asesor(telefono_cliente: str, mensaje_cliente: str):
+    aviso = (
+        "🚨 Nuevo cliente quiere hablar con asesor\n\n"
+        f"📞 Cliente: {telefono_cliente}\n"
+        f"💬 Mensaje: {mensaje_cliente}\n"
+        f"🕒 Hora: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+    )
+    send_whatsapp_message(ADMIN_PHONE, aviso)
 
 
 @app.route("/", methods=["GET"])
@@ -156,12 +188,12 @@ def get_bot_response(user_text: str, from_number: str):
         )
 
     if user_text == "4":
-    guardar_lead(from_number, user_text, "quiere_asesor")
-    notificar_asesor(from_number, "Cliente solicitó hablar con asesor")
-    return (
-        "Un asesor te atenderá en breve. 👨‍💼\n\n"
-        "Ya notificamos a un asesor para que te contacte."
-    )
+        guardar_lead(from_number, user_text, "quiere_asesor")
+        notificar_asesor(from_number, "Cliente solicitó hablar con asesor")
+        return (
+            "Un asesor te atenderá en breve. 👨‍💼\n\n"
+            "Ya notificamos a un asesor para que te contacte."
+        )
 
     carros = obtener_inventario()
     coincidencias = []
@@ -210,41 +242,6 @@ def get_bot_response(user_text: str, from_number: str):
     return "No entendí tu mensaje.\n\nEscribe *menu* para ver las opciones disponibles."
 
 
-def send_whatsapp_message(to_number, message_text):
-    url = f"https://graph.facebook.com/v20.0/{PHONE_NUMBER_ID}/messages"
-
-    headers = {
-        "Authorization": f"Bearer {WHATSAPP_TOKEN}",
-        "Content-Type": "application/json"
-    }
-
-    payload = {
-        "messaging_product": "whatsapp",
-        "to": to_number,
-        "type": "text",
-        "text": {
-            "body": message_text
-        }
-    }
-
-    response = requests.post(url, headers=headers, json=payload)
-    print(response.status_code, response.text)
-
-
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
-
-
-
-
-
-
-def notificar_asesor(telefono_cliente: str, mensaje_cliente: str):
-    aviso = (
-        "🚨 Nuevo cliente quiere hablar con asesor\n\n"
-        f"📞 Cliente: {telefono_cliente}\n"
-        f"💬 Mensaje: {mensaje_cliente}\n"
-        f"🕒 Hora: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
-    )
-    send_whatsapp_message(ADMIN_PHONE, aviso)
