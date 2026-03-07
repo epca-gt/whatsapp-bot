@@ -1,6 +1,7 @@
 from flask import Flask, request, jsonify
 import requests
 import os
+from datetime import datetime
 
 app = Flask(__name__)
 
@@ -9,6 +10,7 @@ WHATSAPP_TOKEN = os.getenv("WHATSAPP_TOKEN")
 PHONE_NUMBER_ID = os.getenv("PHONE_NUMBER_ID")
 
 SHEET_URL = "https://opensheet.elk.sh/1opEhxT7aat4GnVAEBcPqze84TSZMO3W-ji2jyHP8HZc/Sheet1"
+LEADS_WEBHOOK_URL = "https://script.google.com/macros/s/AKfycbwN7uG2ft37ALx9A736YhsBs039czPJCA40YZU1RDIcj5g7viirf3BOVznS1TsgCxoh-w/exec"
 
 
 def obtener_inventario():
@@ -19,6 +21,20 @@ def obtener_inventario():
     except Exception as e:
         print("Error obteniendo inventario:", e)
         return []
+
+
+def guardar_lead(telefono: str, mensaje: str, tipo: str):
+    try:
+        payload = {
+            "fecha": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "telefono": telefono,
+            "mensaje": mensaje,
+            "tipo": tipo
+        }
+        response = requests.post(LEADS_WEBHOOK_URL, json=payload, timeout=15)
+        print("Lead guardado:", response.status_code, response.text)
+    except Exception as e:
+        print("Error guardando lead:", e)
 
 
 @app.route("/", methods=["GET"])
@@ -70,6 +86,7 @@ def get_bot_response(user_text: str, from_number: str):
     ]
 
     if user_text in saludos:
+        guardar_lead(from_number, user_text, "saludo")
         return (
             "Bienvenido a Importadora Los Gemelos 🚗\n\n"
             "Escribe una opción:\n"
@@ -80,6 +97,7 @@ def get_bot_response(user_text: str, from_number: str):
         )
 
     if user_text == "1":
+        guardar_lead(from_number, user_text, "ver_vehiculos")
         carros = obtener_inventario()
 
         if not carros:
@@ -99,6 +117,7 @@ def get_bot_response(user_text: str, from_number: str):
         return mensaje
 
     if user_text == "2":
+        guardar_lead(from_number, user_text, "buscar_marca")
         return (
             "Escribe la marca que buscas.\n\n"
             "Ejemplos:\n"
@@ -110,6 +129,7 @@ def get_bot_response(user_text: str, from_number: str):
         )
 
     if user_text == "3":
+        guardar_lead(from_number, user_text, "cotizar_importacion")
         return (
             "Para cotizar importación, envíanos:\n\n"
             "• Marca\n"
@@ -121,6 +141,7 @@ def get_bot_response(user_text: str, from_number: str):
         )
 
     if user_text == "4":
+        guardar_lead(from_number, user_text, "quiere_asesor")
         return (
             "Un asesor te atenderá en breve. 👨‍💼\n\n"
             "Mientras tanto, puedes escribir:\n"
@@ -138,6 +159,7 @@ def get_bot_response(user_text: str, from_number: str):
             coincidencias.append(carro)
 
     if coincidencias:
+        guardar_lead(from_number, user_text, "busqueda_marca")
         send_whatsapp_message(from_number, f"Resultados para {user_text.title()}:")
 
         for carro in coincidencias[:5]:
@@ -171,6 +193,7 @@ def get_bot_response(user_text: str, from_number: str):
 
         return "Escribe *menu* para volver al menú principal."
 
+    guardar_lead(from_number, user_text, "mensaje_general")
     return "No entendí tu mensaje.\n\nEscribe *menu* para ver las opciones disponibles."
 
 
