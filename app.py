@@ -9,6 +9,7 @@ app = Flask(__name__)
 VERIFY_TOKEN = os.getenv("VERIFY_TOKEN")
 WHATSAPP_TOKEN = os.getenv("WHATSAPP_TOKEN")
 PHONE_NUMBER_ID = os.getenv("PHONE_NUMBER_ID")
+ADMIN_PHONE = "50230306187"
 
 SHEET_URL = "https://opensheet.elk.sh/1opEhxT7aat4GnVAEBcPqze84TSZMO3W-ji2jyHP8HZc/Sheet1"
 LEADS_WEBHOOK_URL = "https://script.google.com/macros/s/AKfycbwN7uG2ft37ALx9A736YhsBs039czPJCA40YZU1RDIcj5g7viirf3BOVznS1TsgCxoh-w/exec"
@@ -155,14 +156,12 @@ def get_bot_response(user_text: str, from_number: str):
         )
 
     if user_text == "4":
-        guardar_lead(from_number, user_text, "quiere_asesor")
-        return (
-            "Un asesor te atenderá en breve. 👨‍💼\n\n"
-            "Mientras tanto, puedes escribir:\n"
-            "• 1 para ver vehículos disponibles\n"
-            "• 2 para buscar por marca\n"
-            "• 3 para cotizar importación"
-        )
+    guardar_lead(from_number, user_text, "quiere_asesor")
+    notificar_asesor(from_number, "Cliente solicitó hablar con asesor")
+    return (
+        "Un asesor te atenderá en breve. 👨‍💼\n\n"
+        "Ya notificamos a un asesor para que te contacte."
+    )
 
     carros = obtener_inventario()
     coincidencias = []
@@ -235,3 +234,17 @@ def send_whatsapp_message(to_number, message_text):
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
+
+
+
+
+
+
+def notificar_asesor(telefono_cliente: str, mensaje_cliente: str):
+    aviso = (
+        "🚨 Nuevo cliente quiere hablar con asesor\n\n"
+        f"📞 Cliente: {telefono_cliente}\n"
+        f"💬 Mensaje: {mensaje_cliente}\n"
+        f"🕒 Hora: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+    )
+    send_whatsapp_message(ADMIN_PHONE, aviso)
