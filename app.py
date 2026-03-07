@@ -462,6 +462,7 @@ def responder_precio_por_id(from_number: str, vehicle_id: str):
         f"💰 Precio del vehículo solicitado:\n\n"
         f"🚗 {marca} {modelo} {anio}\n"
         f"🆔 ID: {vehicle_id}\n"
+        f"📋 Descripción:\n{descripcion_formateada}\n"
         f"💵 Precio: {precio if precio else 'No disponible en este momento'}\n\n"
         f"Escribe *asesor* si deseas continuar con este vehículo."
     )
