@@ -63,7 +63,7 @@ def receive_message():
     return jsonify({"status": "ok"}), 200
 
 
-def get_bot_response(user_text: str, from_number: str) -> str | None:
+def get_bot_response(user_text: str, from_number: str):
     saludos = [
         "hola", "buenas", "buenos dias", "buenas tardes",
         "buenas noches", "menu", "menú", "inicio", "start"
@@ -138,10 +138,7 @@ def get_bot_response(user_text: str, from_number: str) -> str | None:
             coincidencias.append(carro)
 
     if coincidencias:
-        send_whatsapp_message(
-            from_number,
-            f"Resultados para {user_text.title()}:"
-        )
+        send_whatsapp_message(from_number, f"Resultados para {user_text.title()}:")
 
         for carro in coincidencias[:5]:
             marca = carro.get("marca", "")
