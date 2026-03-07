@@ -15,6 +15,9 @@ ADMIN_PHONE = "50230306187"
 SHEET_URL = "https://opensheet.elk.sh/1opEhxT7aat4GnVAEBcPqze84TSZMO3W-ji2jyHP8HZc/Sheet1"
 LEADS_WEBHOOK_URL = "https://script.google.com/macros/s/AKfycbwN7uG2ft37ALx9A736YhsBs039czPJCA40YZU1RDIcj5g7viirf3BOVznS1TsgCxoh-w/exec"
 
+# Anti-duplicados simple en memoria
+processed_message_ids = set()
+
 
 def obtener_inventario():
     try:
@@ -24,6 +27,18 @@ def obtener_inventario():
     except Exception as e:
         print("Error obteniendo inventario:", e)
         return []
+
+
+def obtener_marcas_disponibles():
+    carros = obtener_inventario()
+    marcas = []
+
+    for carro in carros:
+        marca = carro.get("marca", "").strip()
+        if marca and marca.lower() not in [m.lower() for m in marcas]:
+            marcas.append(marca)
+
+    return marcas
 
 
 def guardar_lead(telefono: str, mensaje: str, tipo: str):
@@ -100,27 +115,27 @@ def send_whatsapp_list_menu(to_number):
                     {
                         "title": "Menú principal",
                         "rows": [
-    {
-        "id": "ver_vehiculos",
-        "title": "Ver vehículos",
-        "description": "Inventario disponible"
-    },
-    {
-        "id": "buscar_marca",
-        "title": "Buscar marca",
-        "description": "Toyota, Mazda, Nissan"
-    },
-    {
-        "id": "cotizar_importacion",
-        "title": "Cotizar importación",
-        "description": "Solicita cotización"
-    },
-    {
-        "id": "hablar_asesor",
-        "title": "Hablar con asesor",
-        "description": "Atención personalizada"
-    }
-]
+                            {
+                                "id": "ver_vehiculos",
+                                "title": "Ver vehículos",
+                                "description": "Inventario disponible"
+                            },
+                            {
+                                "id": "buscar_marca",
+                                "title": "Buscar marca",
+                                "description": "Toyota, Mazda, Nissan"
+                            },
+                            {
+                                "id": "cotizar_importacion",
+                                "title": "Cotizar importación",
+                                "description": "Solicita cotización"
+                            },
+                            {
+                                "id": "hablar_asesor",
+                                "title": "Hablar con asesor",
+                                "description": "Atención personalizada"
+                            }
+                        ]
                     }
                 ]
             }
@@ -131,14 +146,64 @@ def send_whatsapp_list_menu(to_number):
     print("LIST:", response.status_code, response.text)
 
 
-def notificar_asesor(telefono_cliente: str, mensaje_cliente: str):
-    aviso = (
-        "🚨 Nuevo cliente quiere hablar con asesor\n\n"
-        f"📞 Cliente: {telefono_cliente}\n"
-        f"💬 Mensaje: {mensaje_cliente}\n"
-        f"🕒 Hora: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
-    )
-    send_whatsapp_message(ADMIN_PHONE, aviso)
+def send_brand_buttons(to_number):
+    marcas = obtener_marcas_disponibles()
+
+    if not marcas:
+        send_whatsapp_message(
+            to_number,
+            "No encontré marcas disponibles en este momento."
+        )
+        return
+
+    # WhatsApp permite máximo 3 reply buttons
+    marcas_para_botones = marcas[:3]
+
+    buttons = []
+    for marca in marcas_para_botones:
+        buttons.append({
+            "type": "reply",
+            "reply": {
+                "id": f"marca_{marca.lower()}",
+                "title": marca[:20]
+            }
+        })
+
+    url = f"https://graph.facebook.com/v20.0/{PHONE_NUMBER_ID}/messages"
+
+    headers = {
+        "Authorization": f"Bearer {WHATSAPP_TOKEN}",
+        "Content-Type": "application/json"
+    }
+
+    payload = {
+        "messaging_product": "whatsapp",
+        "to": to_number,
+        "type": "interactive",
+        "interactive": {
+            "type": "button",
+            "body": {
+                "text": "Selecciona una marca disponible:"
+            },
+            "footer": {
+                "text": "Si no ves tu marca, escríbela manualmente"
+            },
+            "action": {
+                "buttons": buttons
+            }
+        }
+    }
+
+    response = requests.post(url, headers=headers, json=payload)
+    print("BRAND_BUTTONS:", response.status_code, response.text)
+
+    # Si hay más marcas, mandamos texto adicional
+    if len(marcas) > 3:
+        restantes = ", ".join(marcas[3:])
+        send_whatsapp_message(
+            to_number,
+            f"También puedes escribir manualmente otras marcas disponibles: {restantes}"
+        )
 
 
 @app.route("/", methods=["GET"])
@@ -171,8 +236,21 @@ def receive_message():
 
         message = value["messages"][0]
         from_number = message["from"]
+        message_id = message.get("id")
 
-        # Mensajes de texto
+        # Evitar duplicados por reintentos de Meta
+        if message_id in processed_message_ids:
+            print("Mensaje duplicado ignorado:", message_id)
+            return jsonify({"status": "duplicate_ignored"}), 200
+
+        if message_id:
+            processed_message_ids.add(message_id)
+
+            # Limpieza simple para que no crezca demasiado
+            if len(processed_message_ids) > 1000:
+                processed_message_ids.clear()
+
+        # Mensajes de texto normales
         if message["type"] == "text":
             user_text = message["text"]["body"].strip().lower()
 
@@ -189,13 +267,15 @@ def receive_message():
             reply_text = get_bot_response(user_text, from_number)
             if reply_text:
                 send_whatsapp_message(from_number, reply_text)
+
             return jsonify({"status": "ok"}), 200
 
-        # Respuesta de lista interactiva
+        # Mensajes interactivos
         if message["type"] == "interactive":
             interactive = message.get("interactive", {})
             interactive_type = interactive.get("type")
 
+            # Respuesta de lista principal
             if interactive_type == "list_reply":
                 selected_id = interactive["list_reply"]["id"]
 
@@ -206,9 +286,8 @@ def receive_message():
                     return jsonify({"status": "ok"}), 200
 
                 if selected_id == "buscar_marca":
-                    reply_text = get_bot_response("2", from_number)
-                    if reply_text:
-                        send_whatsapp_message(from_number, reply_text)
+                    guardar_lead(from_number, selected_id, "buscar_marca")
+                    send_brand_buttons(from_number)
                     return jsonify({"status": "ok"}), 200
 
                 if selected_id == "cotizar_importacion":
@@ -219,6 +298,17 @@ def receive_message():
 
                 if selected_id == "hablar_asesor":
                     reply_text = get_bot_response("4", from_number)
+                    if reply_text:
+                        send_whatsapp_message(from_number, reply_text)
+                    return jsonify({"status": "ok"}), 200
+
+            # Respuesta de botones de marcas
+            if interactive_type == "button_reply":
+                selected_id = interactive["button_reply"]["id"]
+
+                if selected_id.startswith("marca_"):
+                    marca = selected_id.replace("marca_", "").strip().lower()
+                    reply_text = get_bot_response(marca, from_number)
                     if reply_text:
                         send_whatsapp_message(from_number, reply_text)
                     return jsonify({"status": "ok"}), 200
@@ -252,15 +342,8 @@ def get_bot_response(user_text: str, from_number: str):
 
     if user_text == "2":
         guardar_lead(from_number, user_text, "buscar_marca")
-        return (
-            "Escribe la marca que buscas.\n\n"
-            "Ejemplos:\n"
-            "• Toyota\n"
-            "• Mazda\n"
-            "• Ford\n"
-            "• Nissan\n\n"
-            "Escribe *menu* para volver al menú principal."
-        )
+        send_brand_buttons(from_number)
+        return None
 
     if user_text == "3":
         guardar_lead(from_number, user_text, "cotizar_importacion")
@@ -276,10 +359,11 @@ def get_bot_response(user_text: str, from_number: str):
 
     if user_text == "4":
         guardar_lead(from_number, user_text, "quiere_asesor")
-        notificar_asesor(from_number, "Cliente solicitó hablar con asesor")
         return (
-            "Un asesor te atenderá en breve. 👨‍💼\n\n"
-            "Ya notificamos a un asesor para que te contacte."
+            "Perfecto 👍\n\n"
+            "Habla directamente con nuestro asesor:\n\n"
+            "👨‍💼 Paolo\n"
+            "https://wa.me/50230306187?text=Hola%20vengo%20del%20bot%20de%20Importadora%20Los%20Gemelos"
         )
 
     carros = obtener_inventario()
