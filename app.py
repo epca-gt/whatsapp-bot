@@ -166,61 +166,62 @@ def receive_message():
         changes = entry["changes"][0]
         value = changes["value"]
 
-        if "messages" in value:
-            message = value["messages"][0]
-            from_number = message["from"]
+        if "messages" not in value:
+            return jsonify({"status": "ok"}), 200
 
-            # Texto normal
-            if message["type"] == "text":
-                user_text = message["text"]["body"].strip().lower()
+        message = value["messages"][0]
+        from_number = message["from"]
 
-                saludos = [
-                    "hola", "buenas", "buenos dias", "buenas tardes",
-                    "buenas noches", "menu", "menú", "inicio", "start"
-                ]
+        # Mensajes de texto
+        if message["type"] == "text":
+            user_text = message["text"]["body"].strip().lower()
 
-                if user_text in saludos:
-                    guardar_lead(from_number, user_text, "saludo")
-                    send_whatsapp_list_menu(from_number)
-                else:
-                    reply_text = get_bot_response(user_text, from_number)
+            saludos = [
+                "hola", "buenas", "buenos dias", "buenas tardes",
+                "buenas noches", "menu", "menú", "inicio", "start"
+            ]
+
+            if user_text in saludos:
+                guardar_lead(from_number, user_text, "saludo")
+                send_whatsapp_list_menu(from_number)
+                return jsonify({"status": "ok"}), 200
+
+            reply_text = get_bot_response(user_text, from_number)
+            if reply_text:
+                send_whatsapp_message(from_number, reply_text)
+            return jsonify({"status": "ok"}), 200
+
+        # Respuesta de lista interactiva
+        if message["type"] == "interactive":
+            interactive = message.get("interactive", {})
+            interactive_type = interactive.get("type")
+
+            if interactive_type == "list_reply":
+                selected_id = interactive["list_reply"]["id"]
+
+                if selected_id == "ver_vehiculos":
+                    reply_text = get_bot_response("1", from_number)
                     if reply_text:
                         send_whatsapp_message(from_number, reply_text)
+                    return jsonify({"status": "ok"}), 200
 
-            # Respuesta de lista interactiva
-            elif message["type"] == "interactive":
-                interactive = message.get("interactive", {})
-                interactive_type = interactive.get("type")
-
-                if interactive_type == "list_reply":
-                    selected_id = interactive["list_reply"]["id"]
-
-                    if selected_id == "ver_vehiculos":
-                        guardar_lead(from_number, selected_id, "ver_vehiculos")
-                        reply_text = get_bot_response("1", from_number)
-                        if reply_text:
-                            send_whatsapp_message(from_number, reply_text)
-
-                    elif selected_id == "buscar_marca":
-                        guardar_lead(from_number, selected_id, "buscar_marca")
-                        reply_text = get_bot_response("2", from_number)
-                        if reply_text:
-                            send_whatsapp_message(from_number, reply_text)
-
-                    elif selected_id == "cotizar_importacion":
-                        guardar_lead(from_number, selected_id, "cotizar_importacion")
-                        reply_text = get_bot_response("3", from_number)
-                        if reply_text:
-                            send_whatsapp_message(from_number, reply_text)
-
-                    elif selected_id == "hablar_asesor":
-                        guardar_lead(from_number, selected_id, "quiere_asesor")
-                        notificar_asesor(from_number, "Cliente solicitó hablar con asesor")
-                        reply_text = (
-                            "Un asesor te atenderá en breve. 👨‍💼\n\n"
-                            "Ya notificamos a un asesor para que te contacte."
-                        )
+                if selected_id == "buscar_marca":
+                    reply_text = get_bot_response("2", from_number)
+                    if reply_text:
                         send_whatsapp_message(from_number, reply_text)
+                    return jsonify({"status": "ok"}), 200
+
+                if selected_id == "cotizar_importacion":
+                    reply_text = get_bot_response("3", from_number)
+                    if reply_text:
+                        send_whatsapp_message(from_number, reply_text)
+                    return jsonify({"status": "ok"}), 200
+
+                if selected_id == "hablar_asesor":
+                    reply_text = get_bot_response("4", from_number)
+                    if reply_text:
+                        send_whatsapp_message(from_number, reply_text)
+                    return jsonify({"status": "ok"}), 200
 
     except Exception as e:
         print("Error procesando mensaje:", e)
@@ -325,7 +326,7 @@ def get_bot_response(user_text: str, from_number: str):
         return "Escribe *menu* para volver al menú principal."
 
     return "No entendí tu mensaje.\n\nEscribe *menu* para ver las opciones disponibles."
-    
+
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
