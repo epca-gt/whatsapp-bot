@@ -342,7 +342,7 @@ def send_vehicle_messages(to_number: str, carros: list, marca_mostrada: str):
         f"Escribe el *ID* del vehículo que te interesa para consultar precio o disponibilidad."
     )
 
-    for carro in carros[:5]:
+    for carro in carros:
         carro_id = str(carro.get("id", "")).strip()
         marca = (carro.get("marca") or "").strip()
         modelo = (carro.get("modelo") or "").strip()
@@ -394,7 +394,7 @@ def mostrar_vehiculos(from_number: str):
 
     mensaje = "🚗 Vehículos disponibles:\n\n"
 
-    for carro in carros[:5]:
+    for carro in carros:
         carro_id = str(carro.get("id", "")).strip()
         marca = (carro.get("marca") or "").strip()
         modelo = (carro.get("modelo") or "").strip()
