@@ -2,7 +2,10 @@ from flask import Flask, request, jsonify
 import requests
 import os
 import json
+import re
+import time
 from datetime import datetime
+from urllib.parse import quote
 
 app = Flask(__name__)
 
@@ -15,32 +18,167 @@ ADMIN_PHONE = "50230306187"
 SHEET_URL = "https://opensheet.elk.sh/1opEhxT7aat4GnVAEBcPqze84TSZMO3W-ji2jyHP8HZc/Sheet1"
 LEADS_WEBHOOK_URL = "https://script.google.com/macros/s/AKfycbwN7uG2ft37ALx9A736YhsBs039czPJCA40YZU1RDIcj5g7viirf3BOVznS1TsgCxoh-w/exec"
 
-# Anti-duplicados simple en memoria
-processed_message_ids = set()
+WHATSAPP_API_URL = f"https://graph.facebook.com/v20.0/{PHONE_NUMBER_ID}/messages"
+
+# =========================
+# Configuración simple
+# =========================
+REQUEST_TIMEOUT = 15
+INVENTORY_CACHE_TTL = 60  # segundos
+PROCESSED_MESSAGE_TTL = 600  # 10 minutos
+USER_SESSION_TTL = 1800  # 30 minutos
+
+# =========================
+# Memoria simple en RAM
+# =========================
+inventory_cache = {
+    "data": [],
+    "timestamp": 0
+}
+
+processed_messages = {}  # {message_id: timestamp}
+user_sessions = {}       # {phone: {"state": "...", "updated_at": ts}}
 
 
-def obtener_inventario():
+# =========================
+# Utilidades generales
+# =========================
+def now_ts():
+    return time.time()
+
+
+def normalize_text(text: str) -> str:
+    if not text:
+        return ""
+    text = text.strip().lower()
+    text = re.sub(r"\s+", " ", text)
+    return text
+
+
+def cleanup_processed_messages():
+    current = now_ts()
+    expired = [
+        msg_id for msg_id, ts in processed_messages.items()
+        if current - ts > PROCESSED_MESSAGE_TTL
+    ]
+    for msg_id in expired:
+        processed_messages.pop(msg_id, None)
+
+
+def cleanup_user_sessions():
+    current = now_ts()
+    expired = [
+        phone for phone, session in user_sessions.items()
+        if current - session.get("updated_at", 0) > USER_SESSION_TTL
+    ]
+    for phone in expired:
+        user_sessions.pop(phone, None)
+
+
+def set_user_state(phone: str, state: str):
+    user_sessions[phone] = {
+        "state": state,
+        "updated_at": now_ts()
+    }
+
+
+def get_user_state(phone: str) -> str:
+    cleanup_user_sessions()
+    session = user_sessions.get(phone, {})
+    return session.get("state", "")
+
+
+def clear_user_state(phone: str):
+    user_sessions.pop(phone, None)
+
+
+# =========================
+# Inventario
+# =========================
+def obtener_inventario(force_refresh=False):
+    current = now_ts()
+
+    if (
+        not force_refresh
+        and inventory_cache["data"]
+        and current - inventory_cache["timestamp"] < INVENTORY_CACHE_TTL
+    ):
+        return inventory_cache["data"]
+
     try:
-        response = requests.get(SHEET_URL, timeout=15)
+        response = requests.get(SHEET_URL, timeout=REQUEST_TIMEOUT)
         response.raise_for_status()
-        return response.json()
+        data = response.json()
+
+        if isinstance(data, list):
+            inventory_cache["data"] = data
+            inventory_cache["timestamp"] = current
+            return data
+
+        return []
     except Exception as e:
         print("Error obteniendo inventario:", e)
-        return []
+        return inventory_cache["data"] if inventory_cache["data"] else []
 
 
 def obtener_marcas_disponibles():
     carros = obtener_inventario()
-    marcas = []
+    marcas_map = {}
 
     for carro in carros:
-        marca = carro.get("marca", "").strip()
-        if marca and marca.lower() not in [m.lower() for m in marcas]:
-            marcas.append(marca)
+        marca_original = (carro.get("marca") or "").strip()
+        marca_normalizada = normalize_text(marca_original)
 
-    return marcas
+        if marca_original and marca_normalizada not in marcas_map:
+            marcas_map[marca_normalizada] = marca_original
+
+    return sorted(marcas_map.values(), key=lambda x: x.lower())
 
 
+def buscar_marca_en_texto(user_text: str):
+    """
+    Busca coincidencia flexible de marca dentro del texto.
+    Ejemplos:
+    - 'toyota'
+    - 'quiero toyota'
+    - 'busco mazda'
+    """
+    user_text_norm = normalize_text(user_text)
+    marcas = obtener_marcas_disponibles()
+
+    if not user_text_norm:
+        return None
+
+    # Coincidencia exacta
+    for marca in marcas:
+        if normalize_text(marca) == user_text_norm:
+            return marca
+
+    # Coincidencia contenida
+    for marca in marcas:
+        marca_norm = normalize_text(marca)
+        if marca_norm in user_text_norm:
+            return marca
+
+    return None
+
+
+def obtener_carros_por_marca(marca_buscada: str):
+    carros = obtener_inventario()
+    marca_norm = normalize_text(marca_buscada)
+    coincidencias = []
+
+    for carro in carros:
+        marca = normalize_text(carro.get("marca", ""))
+        if marca == marca_norm:
+            coincidencias.append(carro)
+
+    return coincidencias
+
+
+# =========================
+# Leads
+# =========================
 def guardar_lead(telefono: str, mensaje: str, tipo: str):
     try:
         payload = {
@@ -58,7 +196,7 @@ def guardar_lead(telefono: str, mensaje: str, tipo: str):
             LEADS_WEBHOOK_URL,
             headers=headers,
             data=json.dumps(payload),
-            timeout=15
+            timeout=REQUEST_TIMEOUT
         )
 
         print("Lead guardado:", response.status_code)
@@ -68,14 +206,30 @@ def guardar_lead(telefono: str, mensaje: str, tipo: str):
         print("Error guardando lead:", e)
 
 
-def send_whatsapp_message(to_number, message_text):
-    url = f"https://graph.facebook.com/v20.0/{PHONE_NUMBER_ID}/messages"
-
+# =========================
+# WhatsApp send helpers
+# =========================
+def send_whatsapp_payload(payload: dict):
     headers = {
         "Authorization": f"Bearer {WHATSAPP_TOKEN}",
         "Content-Type": "application/json"
     }
 
+    try:
+        response = requests.post(
+            WHATSAPP_API_URL,
+            headers=headers,
+            json=payload,
+            timeout=REQUEST_TIMEOUT
+        )
+        print("WA:", response.status_code, response.text)
+        return response
+    except Exception as e:
+        print("Error enviando mensaje WhatsApp:", e)
+        return None
+
+
+def send_whatsapp_message(to_number: str, message_text: str):
     payload = {
         "messaging_product": "whatsapp",
         "to": to_number,
@@ -84,19 +238,10 @@ def send_whatsapp_message(to_number, message_text):
             "body": message_text
         }
     }
-
-    response = requests.post(url, headers=headers, json=payload)
-    print("TEXT:", response.status_code, response.text)
+    return send_whatsapp_payload(payload)
 
 
-def send_whatsapp_list_menu(to_number):
-    url = f"https://graph.facebook.com/v20.0/{PHONE_NUMBER_ID}/messages"
-
-    headers = {
-        "Authorization": f"Bearer {WHATSAPP_TOKEN}",
-        "Content-Type": "application/json"
-    }
-
+def send_whatsapp_list_menu(to_number: str):
     payload = {
         "messaging_product": "whatsapp",
         "to": to_number,
@@ -123,12 +268,12 @@ def send_whatsapp_list_menu(to_number):
                             {
                                 "id": "buscar_marca",
                                 "title": "Buscar marca",
-                                "description": "Toyota, Mazda, Nissan"
+                                "description": "Toyota, Mazda, Nissan y más"
                             },
                             {
                                 "id": "cotizar_importacion",
                                 "title": "Cotizar importación",
-                                "description": "Solicita cotización"
+                                "description": "Solicita una cotización"
                             },
                             {
                                 "id": "hablar_asesor",
@@ -141,12 +286,10 @@ def send_whatsapp_list_menu(to_number):
             }
         }
     }
-
-    response = requests.post(url, headers=headers, json=payload)
-    print("LIST:", response.status_code, response.text)
+    return send_whatsapp_payload(payload)
 
 
-def send_brand_buttons(to_number):
+def send_brand_list_menu(to_number: str):
     marcas = obtener_marcas_disponibles()
 
     if not marcas:
@@ -156,32 +299,21 @@ def send_brand_buttons(to_number):
         )
         return
 
-    # WhatsApp permite máximo 3 reply buttons
-    marcas_para_botones = marcas[:3]
-
-    buttons = []
-    for marca in marcas_para_botones:
-        buttons.append({
-            "type": "reply",
-            "reply": {
-                "id": f"marca_{marca.lower()}",
-                "title": marca[:20]
-            }
+    # WhatsApp list soporta hasta 10 rows por sección.
+    rows = []
+    for marca in marcas[:10]:
+        rows.append({
+            "id": f"marca_{normalize_text(marca).replace(' ', '_')}",
+            "title": marca[:24],
+            "description": "Ver vehículos disponibles"
         })
-
-    url = f"https://graph.facebook.com/v20.0/{PHONE_NUMBER_ID}/messages"
-
-    headers = {
-        "Authorization": f"Bearer {WHATSAPP_TOKEN}",
-        "Content-Type": "application/json"
-    }
 
     payload = {
         "messaging_product": "whatsapp",
         "to": to_number,
         "type": "interactive",
         "interactive": {
-            "type": "button",
+            "type": "list",
             "body": {
                 "text": "Selecciona una marca disponible:"
             },
@@ -189,23 +321,252 @@ def send_brand_buttons(to_number):
                 "text": "Si no ves tu marca, escríbela manualmente"
             },
             "action": {
-                "buttons": buttons
+                "button": "Ver marcas",
+                "sections": [
+                    {
+                        "title": "Marcas disponibles",
+                        "rows": rows
+                    }
+                ]
             }
         }
     }
 
-    response = requests.post(url, headers=headers, json=payload)
-    print("BRAND_BUTTONS:", response.status_code, response.text)
+    send_whatsapp_payload(payload)
 
-    # Si hay más marcas, mandamos texto adicional
-    if len(marcas) > 3:
-        restantes = ", ".join(marcas[3:])
+    if len(marcas) > 10:
+        restantes = ", ".join(marcas[10:])
         send_whatsapp_message(
             to_number,
-            f"También puedes escribir manualmente otras marcas disponibles: {restantes}"
+            f"También puedes escribir manualmente estas marcas: {restantes}"
         )
 
 
+def send_vehicle_messages(to_number: str, carros: list, marca_mostrada: str):
+    send_whatsapp_message(to_number, f"Resultados para {marca_mostrada}:")
+
+    for carro in carros[:5]:
+        marca = (carro.get("marca") or "").strip()
+        modelo = (carro.get("modelo") or "").strip()
+        anio = (carro.get("anio") or "").strip()
+        precio = (carro.get("precio") or "").strip()
+        motor = (carro.get("motor") or "").strip()
+        transmision = (carro.get("transmision") or "").strip()
+        millaje = (carro.get("millaje") or "").strip()
+        link_fotos = (carro.get("link_fotos") or "").strip()
+        descripcion = (carro.get("descripcion") or "").strip()
+
+        descripcion_formateada = ""
+        if descripcion:
+            lineas = [line.strip() for line in descripcion.split("\n") if line.strip()]
+            if lineas:
+                descripcion_formateada = "\n".join(lineas)
+
+        partes = [
+            f"🚗 {marca} {modelo} {anio}".strip(),
+            f"💰 Precio: {precio}" if precio else "",
+            f"⚙️ Motor: {motor}" if motor else "",
+            f"🔄 Transmisión: {transmision}" if transmision else "",
+            f"📏 Millaje: {millaje}" if millaje else "",
+            f"📋 Descripción:\n{descripcion_formateada}" if descripcion_formateada else "",
+            f"📸 Ver fotos del vehículo:\n{link_fotos}" if link_fotos else ""
+        ]
+
+        mensaje = "\n".join([p for p in partes if p])
+        send_whatsapp_message(to_number, mensaje)
+
+    send_whatsapp_message(to_number, "Escribe *menu* para volver al menú principal o *asesor* para hablar con un vendedor.")
+
+
+# =========================
+# Respuestas del bot
+# =========================
+def build_advisor_link():
+    text = quote("Hola vengo del bot de Importadora Los Gemelos")
+    return f"https://wa.me/{ADMIN_PHONE}?text={text}"
+
+
+def mostrar_vehiculos(from_number: str):
+    guardar_lead(from_number, "ver_vehiculos", "ver_vehiculos")
+    carros = obtener_inventario()
+
+    if not carros:
+        send_whatsapp_message(from_number, "No hay vehículos disponibles en este momento.")
+        return
+
+    mensaje = "🚗 Vehículos disponibles:\n\n"
+
+    for carro in carros[:5]:
+        marca = (carro.get("marca") or "").strip()
+        modelo = (carro.get("modelo") or "").strip()
+        anio = (carro.get("anio") or "").strip()
+        precio = (carro.get("precio") or "").strip()
+
+        mensaje += f"• {marca} {modelo} {anio}\n"
+        if precio:
+            mensaje += f"💰 {precio}\n"
+        mensaje += "\n"
+
+    mensaje += "Escribe la marca que buscas para ver más detalles."
+    send_whatsapp_message(from_number, mensaje)
+    set_user_state(from_number, "awaiting_brand")
+
+
+def iniciar_busqueda_marca(from_number: str):
+    guardar_lead(from_number, "buscar_marca", "buscar_marca")
+    set_user_state(from_number, "awaiting_brand")
+    send_brand_list_menu(from_number)
+
+
+def responder_cotizacion(from_number: str):
+    guardar_lead(from_number, "cotizar_importacion", "cotizar_importacion")
+    set_user_state(from_number, "awaiting_import_quote")
+    send_whatsapp_message(
+        from_number,
+        "Para cotizar importación, envíanos:\n\n"
+        "• Marca\n"
+        "• Modelo\n"
+        "• Año aproximado\n"
+        "• Presupuesto\n\n"
+        "Ejemplo:\n"
+        "Toyota Tacoma 2021, presupuesto Q180,000"
+    )
+
+
+def responder_asesor(from_number: str):
+    guardar_lead(from_number, "asesor", "quiere_asesor")
+    clear_user_state(from_number)
+    send_whatsapp_message(
+        from_number,
+        "Perfecto 👍\n\n"
+        f"Habla directamente con nuestro asesor:\n\n👨‍💼 Paolo\n{build_advisor_link()}"
+    )
+
+
+def manejar_marca(from_number: str, marca_detectada: str):
+    coincidencias = obtener_carros_por_marca(marca_detectada)
+
+    if not coincidencias:
+        send_whatsapp_message(
+            from_number,
+            f"No encontré vehículos de {marca_detectada} en este momento.\n\nEscribe *menu* para volver al menú principal."
+        )
+        return
+
+    guardar_lead(from_number, marca_detectada, "busqueda_marca")
+    clear_user_state(from_number)
+    send_vehicle_messages(from_number, coincidencias, marca_detectada)
+
+
+def handle_text_message(from_number: str, user_text_raw: str):
+    user_text = normalize_text(user_text_raw)
+    state = get_user_state(from_number)
+
+    saludos = {
+        "hola", "buenas", "buenos dias", "buenas tardes",
+        "buenas noches", "menu", "menú", "inicio", "start"
+    }
+
+    if user_text in saludos:
+        guardar_lead(from_number, user_text, "saludo")
+        clear_user_state(from_number)
+        send_whatsapp_list_menu(from_number)
+        return
+
+    if user_text in {"1", "ver vehiculos", "ver vehículos"}:
+        mostrar_vehiculos(from_number)
+        return
+
+    if user_text in {"2", "buscar marca"}:
+        iniciar_busqueda_marca(from_number)
+        return
+
+    if user_text in {"3", "cotizar importacion", "cotizar importación"}:
+        responder_cotizacion(from_number)
+        return
+
+    if user_text in {"4", "asesor", "hablar con asesor"}:
+        responder_asesor(from_number)
+        return
+
+    # Si el usuario estaba en modo búsqueda de marca
+    if state == "awaiting_brand":
+        marca_detectada = buscar_marca_en_texto(user_text)
+        if marca_detectada:
+            manejar_marca(from_number, marca_detectada)
+            return
+
+    # Aun si no está en estado de búsqueda, intentamos detectar marca
+    marca_detectada = buscar_marca_en_texto(user_text)
+    if marca_detectada:
+        manejar_marca(from_number, marca_detectada)
+        return
+
+    # Si el usuario está cotizando importación, guardamos texto libre como lead
+    if state == "awaiting_import_quote":
+        guardar_lead(from_number, user_text_raw, "detalle_cotizacion")
+        clear_user_state(from_number)
+        send_whatsapp_message(
+            from_number,
+            "Gracias, ya recibimos tu solicitud ✅\n\nUn asesor revisará tu información y te contactará."
+        )
+        return
+
+    send_whatsapp_message(
+        from_number,
+        "No entendí tu mensaje.\n\nEscribe *menu* para ver las opciones disponibles."
+    )
+
+
+def handle_interactive_message(from_number: str, interactive: dict):
+    interactive_type = interactive.get("type")
+
+    if interactive_type == "list_reply":
+        list_reply = interactive.get("list_reply", {})
+        selected_id = list_reply.get("id", "")
+
+        if selected_id == "ver_vehiculos":
+            mostrar_vehiculos(from_number)
+            return
+
+        if selected_id == "buscar_marca":
+            iniciar_busqueda_marca(from_number)
+            return
+
+        if selected_id == "cotizar_importacion":
+            responder_cotizacion(from_number)
+            return
+
+        if selected_id == "hablar_asesor":
+            responder_asesor(from_number)
+            return
+
+        if selected_id.startswith("marca_"):
+            marca_slug = selected_id.replace("marca_", "").replace("_", " ").strip()
+            marcas = obtener_marcas_disponibles()
+
+            for marca in marcas:
+                if normalize_text(marca) == normalize_text(marca_slug):
+                    manejar_marca(from_number, marca)
+                    return
+
+    if interactive_type == "button_reply":
+        button_reply = interactive.get("button_reply", {})
+        selected_id = button_reply.get("id", "")
+
+        if selected_id.startswith("marca_"):
+            marca_slug = selected_id.replace("marca_", "").replace("_", " ").strip()
+            marcas = obtener_marcas_disponibles()
+
+            for marca in marcas:
+                if normalize_text(marca) == normalize_text(marca_slug):
+                    manejar_marca(from_number, marca)
+                    return
+
+
+# =========================
+# Flask routes
+# =========================
 @app.route("/", methods=["GET"])
 def home():
     return "Bot activo", 200
@@ -224,192 +585,49 @@ def verify_webhook():
 
 @app.route("/webhook", methods=["POST"])
 def receive_message():
-    data = request.get_json()
+    cleanup_processed_messages()
+    cleanup_user_sessions()
+
+    data = request.get_json(silent=True) or {}
 
     try:
-        entry = data["entry"][0]
-        changes = entry["changes"][0]
-        value = changes["value"]
+        entry = (data.get("entry") or [])[0]
+        changes = (entry.get("changes") or [])[0]
+        value = changes.get("value", {})
 
         if "messages" not in value:
-            return jsonify({"status": "ok"}), 200
+            return jsonify({"status": "ok_no_messages"}), 200
 
         message = value["messages"][0]
-        from_number = message["from"]
+        from_number = message.get("from")
         message_id = message.get("id")
+        message_type = message.get("type")
 
-        # Evitar duplicados por reintentos de Meta
-        if message_id in processed_message_ids:
-            print("Mensaje duplicado ignorado:", message_id)
-            return jsonify({"status": "duplicate_ignored"}), 200
+        if not from_number:
+            return jsonify({"status": "ok_no_from"}), 200
 
+        # Anti-duplicado con TTL
         if message_id:
-            processed_message_ids.add(message_id)
+            if message_id in processed_messages:
+                print("Mensaje duplicado ignorado:", message_id)
+                return jsonify({"status": "duplicate_ignored"}), 200
+            processed_messages[message_id] = now_ts()
 
-            # Limpieza simple para que no crezca demasiado
-            if len(processed_message_ids) > 1000:
-                processed_message_ids.clear()
+        if message_type == "text":
+            user_text_raw = message.get("text", {}).get("body", "").strip()
+            handle_text_message(from_number, user_text_raw)
+            return jsonify({"status": "ok_text"}), 200
 
-        # Mensajes de texto normales
-        if message["type"] == "text":
-            user_text = message["text"]["body"].strip().lower()
-
-            saludos = [
-                "hola", "buenas", "buenos dias", "buenas tardes",
-                "buenas noches", "menu", "menú", "inicio", "start"
-            ]
-
-            if user_text in saludos:
-                guardar_lead(from_number, user_text, "saludo")
-                send_whatsapp_list_menu(from_number)
-                return jsonify({"status": "ok"}), 200
-
-            reply_text = get_bot_response(user_text, from_number)
-            if reply_text:
-                send_whatsapp_message(from_number, reply_text)
-
-            return jsonify({"status": "ok"}), 200
-
-        # Mensajes interactivos
-        if message["type"] == "interactive":
+        if message_type == "interactive":
             interactive = message.get("interactive", {})
-            interactive_type = interactive.get("type")
+            handle_interactive_message(from_number, interactive)
+            return jsonify({"status": "ok_interactive"}), 200
 
-            # Respuesta de lista principal
-            if interactive_type == "list_reply":
-                selected_id = interactive["list_reply"]["id"]
-
-                if selected_id == "ver_vehiculos":
-                    reply_text = get_bot_response("1", from_number)
-                    if reply_text:
-                        send_whatsapp_message(from_number, reply_text)
-                    return jsonify({"status": "ok"}), 200
-
-                if selected_id == "buscar_marca":
-                    guardar_lead(from_number, selected_id, "buscar_marca")
-                    send_brand_buttons(from_number)
-                    return jsonify({"status": "ok"}), 200
-
-                if selected_id == "cotizar_importacion":
-                    reply_text = get_bot_response("3", from_number)
-                    if reply_text:
-                        send_whatsapp_message(from_number, reply_text)
-                    return jsonify({"status": "ok"}), 200
-
-                if selected_id == "hablar_asesor":
-                    reply_text = get_bot_response("4", from_number)
-                    if reply_text:
-                        send_whatsapp_message(from_number, reply_text)
-                    return jsonify({"status": "ok"}), 200
-
-            # Respuesta de botones de marcas
-            if interactive_type == "button_reply":
-                selected_id = interactive["button_reply"]["id"]
-
-                if selected_id.startswith("marca_"):
-                    marca = selected_id.replace("marca_", "").strip().lower()
-                    reply_text = get_bot_response(marca, from_number)
-                    if reply_text:
-                        send_whatsapp_message(from_number, reply_text)
-                    return jsonify({"status": "ok"}), 200
+        return jsonify({"status": f"ignored_{message_type}"}), 200
 
     except Exception as e:
         print("Error procesando mensaje:", e)
-
-    return jsonify({"status": "ok"}), 200
-
-
-def get_bot_response(user_text: str, from_number: str):
-    if user_text == "1":
-        guardar_lead(from_number, user_text, "ver_vehiculos")
-        carros = obtener_inventario()
-
-        if not carros:
-            return "No hay vehículos disponibles en este momento."
-
-        mensaje = "🚗 Vehículos disponibles:\n\n"
-
-        for carro in carros[:5]:
-            marca = carro.get("marca", "")
-            modelo = carro.get("modelo", "")
-            anio = carro.get("anio", "")
-            precio = carro.get("precio", "")
-
-            mensaje += f"• {marca} {modelo} {anio}\n💰 {precio}\n\n"
-
-        mensaje += "Escribe la marca que buscas para ver más detalles."
-        return mensaje
-
-    if user_text == "2":
-        guardar_lead(from_number, user_text, "buscar_marca")
-        send_brand_buttons(from_number)
-        return None
-
-    if user_text == "3":
-        guardar_lead(from_number, user_text, "cotizar_importacion")
-        return (
-            "Para cotizar importación, envíanos:\n\n"
-            "• Marca\n"
-            "• Modelo\n"
-            "• Año aproximado\n"
-            "• Presupuesto\n\n"
-            "Ejemplo:\n"
-            "Toyota Tacoma 2021, presupuesto Q180,000"
-        )
-
-    if user_text == "4":
-        guardar_lead(from_number, user_text, "quiere_asesor")
-        return (
-            "Perfecto 👍\n\n"
-            "Habla directamente con nuestro asesor:\n\n"
-            "👨‍💼 Paolo\n"
-            "https://wa.me/50230306187?text=Hola%20vengo%20del%20bot%20de%20Importadora%20Los%20Gemelos"
-        )
-
-    carros = obtener_inventario()
-    coincidencias = []
-
-    for carro in carros:
-        marca = carro.get("marca", "").strip().lower()
-        if marca == user_text:
-            coincidencias.append(carro)
-
-    if coincidencias:
-        guardar_lead(from_number, user_text, "busqueda_marca")
-        send_whatsapp_message(from_number, f"Resultados para {user_text.title()}:")
-
-        for carro in coincidencias[:5]:
-            marca = carro.get("marca", "")
-            modelo = carro.get("modelo", "")
-            anio = carro.get("anio", "")
-            precio = carro.get("precio", "")
-            motor = carro.get("motor", "")
-            transmision = carro.get("transmision", "")
-            millaje = carro.get("millaje", "")
-            link_fotos = carro.get("link_fotos", "")
-            descripcion = carro.get("descripcion", "").strip()
-
-            descripcion_formateada = ""
-            if descripcion:
-                lineas = [line.strip() for line in descripcion.split("\n") if line.strip()]
-                if lineas:
-                    descripcion_formateada = "\n".join(lineas)
-
-            mensaje = (
-                f"🚗 {marca} {modelo} {anio}\n"
-                f"💰 Precio: {precio}\n"
-                f"⚙️ Motor: {motor}\n"
-                f"🔄 Transmisión: {transmision}\n"
-                f"📏 Millaje: {millaje}\n"
-                f"{'📋 Descripción:\n' + descripcion_formateada + '\n' if descripcion_formateada else ''}"
-                f"📸 Ver fotos del vehículo:\n{link_fotos}"
-            )
-
-            send_whatsapp_message(from_number, mensaje)
-
-        return "Escribe *menu* para volver al menú principal."
-
-    return "No entendí tu mensaje.\n\nEscribe *menu* para ver las opciones disponibles."
+        return jsonify({"status": "ok_error_handled"}), 200
 
 
 if __name__ == "__main__":
