@@ -1,20 +1,24 @@
 from flask import Flask, request, jsonify
 import requests
 import os
-import requests
-
-SHEET_URL = "https://opensheet.elk.sh/1opEhxT7aat4GnVAEBcPqze84TSZMO3W-ji2jyHP8HZc/Sheet1"
-
-
-def obtener_inventario():
-    response = requests.get(SHEET_URL)
-    return response.json()
 
 app = Flask(__name__)
 
 VERIFY_TOKEN = os.getenv("VERIFY_TOKEN")
 WHATSAPP_TOKEN = os.getenv("WHATSAPP_TOKEN")
 PHONE_NUMBER_ID = os.getenv("PHONE_NUMBER_ID")
+
+SHEET_URL = "https://opensheet.elk.sh/1opEhxT7aat4GnVAEBcPqze84TSZMO3W-ji2jyHP8HZc/Sheet1"
+
+
+def obtener_inventario():
+    try:
+        response = requests.get(SHEET_URL, timeout=15)
+        response.raise_for_status()
+        return response.json()
+    except Exception as e:
+        print("Error obteniendo inventario:", e)
+        return []
 
 
 @app.route("/", methods=["GET"])
@@ -58,7 +62,10 @@ def receive_message():
 
 
 def get_bot_response(user_text: str) -> str:
-    saludos = ["hola", "buenas", "buenos dias", "buenas tardes", "buenas noches", "menu", "menú", "inicio", "start"]
+    saludos = [
+        "hola", "buenas", "buenos dias", "buenas tardes",
+        "buenas noches", "menu", "menú", "inicio", "start"
+    ]
 
     if user_text in saludos:
         return (
@@ -71,33 +78,23 @@ def get_bot_response(user_text: str) -> str:
         )
 
     if user_text == "1":
-    carros = obtener_inventario()
+        carros = obtener_inventario()
 
-    if not carros:
-        return "No hay vehículos disponibles en este momento."
+        if not carros:
+            return "No hay vehículos disponibles en este momento."
 
-    mensaje = "🚗 Vehículos disponibles:\n\n"
+        mensaje = "🚗 Vehículos disponibles:\n\n"
 
-    for carro in carros[:5]:
-        mensaje += (
-            f"• {carro['marca']} {carro['modelo']} {carro['anio']}\n"
-            f"💰 {carro['precio']}\n\n"
-        )
+        for carro in carros[:5]:
+            marca = carro.get("marca", "")
+            modelo = carro.get("modelo", "")
+            anio = carro.get("anio", "")
+            precio = carro.get("precio", "")
 
-    mensaje += "Escribe la marca para ver más detalles."
+            mensaje += f"• {marca} {modelo} {anio}\n💰 {precio}\n\n"
 
-    return mensaje
-
-    for carro in obtener_inventario():
-    if user_text in carro["marca"].lower():
-        return (
-            f"🚗 {carro['marca']} {carro['modelo']} {carro['anio']}\n\n"
-            f"💰 Precio: {carro['precio']}\n"
-            f"⚙️ Motor: {carro['motor']}\n"
-            f"🔄 Transmisión: {carro['transmision']}\n"
-            f"📏 Millaje: {carro['millaje']}\n\n"
-            f"📸 Fotos:\n{carro['link_fotos']}"
-        )
+        mensaje += "Escribe la marca que buscas para ver más detalles."
+        return mensaje
 
     if user_text == "2":
         return (
@@ -107,14 +104,6 @@ def get_bot_response(user_text: str) -> str:
             "• Mazda\n"
             "• Ford\n\n"
             "Escribe *menu* para volver al menú principal."
-        )
-
-    if user_text in ["toyota", "mazda", "ford", "honda", "nissan", "chevrolet"]:
-        return (
-            f"Resultados para la marca *{user_text.title()}*:\n\n"
-            f"Por ahora esta búsqueda está en modo demo.\n"
-            f"En el siguiente paso la conectaremos al inventario real.\n\n"
-            f"Escribe *menu* para volver al menú principal."
         )
 
     if user_text == "3":
@@ -137,10 +126,40 @@ def get_bot_response(user_text: str) -> str:
             "• 3 para cotizar importación"
         )
 
-    return (
-        "No entendí tu mensaje.\n\n"
-        "Escribe *menu* para ver las opciones disponibles."
-    )
+    carros = obtener_inventario()
+    coincidencias = []
+
+    for carro in carros:
+        marca = carro.get("marca", "").strip().lower()
+        if marca == user_text:
+            coincidencias.append(carro)
+
+    if coincidencias:
+        mensaje = f"Resultados para *{user_text.title()}*:\n\n"
+
+        for carro in coincidencias[:5]:
+            marca = carro.get("marca", "")
+            modelo = carro.get("modelo", "")
+            anio = carro.get("anio", "")
+            precio = carro.get("precio", "")
+            motor = carro.get("motor", "")
+            transmision = carro.get("transmision", "")
+            millaje = carro.get("millaje", "")
+            link_fotos = carro.get("link_fotos", "")
+
+            mensaje += (
+                f"🚗 {marca} {modelo} {anio}\n"
+                f"💰 Precio: {precio}\n"
+                f"⚙️ Motor: {motor}\n"
+                f"🔄 Transmisión: {transmision}\n"
+                f"📏 Millaje: {millaje}\n"
+                f"📸 Fotos: {link_fotos}\n\n"
+            )
+
+        mensaje += "Escribe *menu* para volver al menú principal."
+        return mensaje
+
+    return "No entendí tu mensaje.\n\nEscribe *menu* para ver las opciones disponibles."
 
 
 def send_whatsapp_message(to_number, message_text):
