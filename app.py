@@ -172,7 +172,7 @@ def buscar_carro_por_id(vehicle_id: str):
 
     for carro in carros:
         carro_id = str(carro.get("id", "")).strip()
-        if carro_id == vehicle_id:
+        if carro_id.lower() == vehicle_id.lower():
             return carro
 
     return None
