@@ -455,6 +455,7 @@ def responder_precio_por_id(from_number: str, vehicle_id: str):
     modelo = (carro.get("modelo") or "").strip()
     anio = (carro.get("anio") or "").strip()
     precio = (carro.get("precio") or "").strip()
+    descripcion = (carro.get("descripcion") or "").strip()
 
     guardar_lead(from_number, f"id:{vehicle_id}", "consulta_precio_por_id")
 
@@ -462,7 +463,7 @@ def responder_precio_por_id(from_number: str, vehicle_id: str):
         f"💰 Precio del vehículo solicitado:\n\n"
         f"🚗 {marca} {modelo} {anio}\n"
         f"🆔 ID: {vehicle_id}\n"
-        f"📋 Descripción:\n{descripcion_formateada}\n"
+        f"📋 Descripción:\n{descripcion}\n"
         f"💵 Precio: {precio if precio else 'No disponible en este momento'}\n\n"
         f"Escribe *asesor* si deseas continuar con este vehículo."
     )
