@@ -52,8 +52,10 @@ def receive_message():
 
             if message["type"] == "text":
                 user_text = message["text"]["body"].strip().lower()
-                reply_text = get_bot_response(user_text)
-                send_whatsapp_message(from_number, reply_text)
+                reply_text = get_bot_response(user_text, from_number)
+
+                if reply_text:
+                    send_whatsapp_message(from_number, reply_text)
 
     except Exception as e:
         print("Error procesando mensaje:", e)
@@ -61,7 +63,7 @@ def receive_message():
     return jsonify({"status": "ok"}), 200
 
 
-def get_bot_response(user_text: str) -> str:
+def get_bot_response(user_text: str, from_number: str) -> str | None:
     saludos = [
         "hola", "buenas", "buenos dias", "buenas tardes",
         "buenas noches", "menu", "menú", "inicio", "start"
@@ -102,7 +104,8 @@ def get_bot_response(user_text: str) -> str:
             "Ejemplos:\n"
             "• Toyota\n"
             "• Mazda\n"
-            "• Ford\n\n"
+            "• Ford\n"
+            "• Nissan\n\n"
             "Escribe *menu* para volver al menú principal."
         )
 
@@ -134,45 +137,42 @@ def get_bot_response(user_text: str) -> str:
         if marca == user_text:
             coincidencias.append(carro)
 
-
     if coincidencias:
-
-    send_whatsapp_message(
-        from_number,
-        f"Resultados para {user_text.title()}:"
-    )
-
-    for carro in coincidencias[:5]:
-
-        marca = carro.get("marca", "")
-        modelo = carro.get("modelo", "")
-        anio = carro.get("anio", "")
-        precio = carro.get("precio", "")
-        motor = carro.get("motor", "")
-        transmision = carro.get("transmision", "")
-        millaje = carro.get("millaje", "")
-        link_fotos = carro.get("link_fotos", "")
-        descripcion = carro.get("descripcion", "").strip()
-
-        descripcion_formateada = ""
-        if descripcion:
-            lineas = [line.strip() for line in descripcion.split("\n") if line.strip()]
-            if lineas:
-                descripcion_formateada = "\n".join(lineas)
-
-        mensaje = (
-            f"🚗 {marca} {modelo} {anio}\n"
-            f"💰 Precio: {precio}\n"
-            f"⚙️ Motor: {motor}\n"
-            f"🔄 Transmisión: {transmision}\n"
-            f"📏 Millaje: {millaje}\n"
-            f"{'📋 Descripción:\n' + descripcion_formateada + '\n' if descripcion_formateada else ''}"
-            f"📸 Fotos: {link_fotos}"
+        send_whatsapp_message(
+            from_number,
+            f"Resultados para {user_text.title()}:"
         )
 
-        send_whatsapp_message(from_number, mensaje)
+        for carro in coincidencias[:5]:
+            marca = carro.get("marca", "")
+            modelo = carro.get("modelo", "")
+            anio = carro.get("anio", "")
+            precio = carro.get("precio", "")
+            motor = carro.get("motor", "")
+            transmision = carro.get("transmision", "")
+            millaje = carro.get("millaje", "")
+            link_fotos = carro.get("link_fotos", "")
+            descripcion = carro.get("descripcion", "").strip()
 
-    return "Escribe *menu* para volver al menú principal."
+            descripcion_formateada = ""
+            if descripcion:
+                lineas = [line.strip() for line in descripcion.split("\n") if line.strip()]
+                if lineas:
+                    descripcion_formateada = "\n".join(lineas)
+
+            mensaje = (
+                f"🚗 {marca} {modelo} {anio}\n"
+                f"💰 Precio: {precio}\n"
+                f"⚙️ Motor: {motor}\n"
+                f"🔄 Transmisión: {transmision}\n"
+                f"📏 Millaje: {millaje}\n"
+                f"{'📋 Descripción:\n' + descripcion_formateada + '\n' if descripcion_formateada else ''}"
+                f"📸 Fotos: {link_fotos}"
+            )
+
+            send_whatsapp_message(from_number, mensaje)
+
+        return "Escribe *menu* para volver al menú principal."
 
     return "No entendí tu mensaje.\n\nEscribe *menu* para ver las opciones disponibles."
 
