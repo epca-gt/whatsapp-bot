@@ -3,7 +3,7 @@ import requests
 import os
 import requests
 
-SHEET_URL = "https://opensheet.elk.sh/1opEhxT7aat4GnVAEBcPqze84TSZMO3W-ji2jyHP8HZc/inventario_bot"
+SHEET_URL = "https://opensheet.elk.sh/1opEhxT7aat4GnVAEBcPqze84TSZMO3W-ji2jyHP8HZc/Sheet1"
 
 
 def obtener_inventario():
