@@ -104,7 +104,7 @@ def send_whatsapp_list_menu(to_number):
         "interactive": {
             "type": "list",
             "body": {
-                "text": "Bienvenido a Importadora Los Gemelos 🚗\n\nSelecciona una opción:"
+                "text": "Bienvenido a Importadora Los Gemelos y El Fer 🚗\n\nSelecciona una opción:"
             },
             "footer": {
                 "text": "Atención automatizada"
