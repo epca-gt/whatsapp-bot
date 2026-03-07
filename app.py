@@ -20,30 +20,21 @@ LEADS_WEBHOOK_URL = "https://script.google.com/macros/s/AKfycbwN7uG2ft37ALx9A736
 
 WHATSAPP_API_URL = f"https://graph.facebook.com/v20.0/{PHONE_NUMBER_ID}/messages"
 
-# =========================
-# Configuración
-# =========================
 REQUEST_TIMEOUT = 15
-INVENTORY_CACHE_TTL = 300      # 5 minutos
-PROCESSED_MESSAGE_TTL = 600    # 10 minutos
-USER_SESSION_TTL = 1800        # 30 minutos
+INVENTORY_CACHE_TTL = 300
+PROCESSED_MESSAGE_TTL = 600
+USER_SESSION_TTL = 1800
 
-# =========================
-# Memoria en RAM
-# =========================
 inventory_cache = {
     "data": [],
     "timestamp": 0,
     "last_success": 0
 }
 
-processed_messages = {}  # {message_id: timestamp}
-user_sessions = {}       # {phone: {"state": "...", "updated_at": ts}}
+processed_messages = {}
+user_sessions = {}
 
 
-# =========================
-# Utilidades generales
-# =========================
 def now_ts():
     return time.time()
 
@@ -93,14 +84,7 @@ def clear_user_state(phone: str):
     user_sessions.pop(phone, None)
 
 
-# =========================
-# Inventario en memoria
-# =========================
 def refrescar_inventario():
-    """
-    Fuerza actualización del inventario desde OpenSheet.
-    Si falla, conserva la copia anterior en memoria.
-    """
     try:
         response = requests.get(SHEET_URL, timeout=REQUEST_TIMEOUT)
         response.raise_for_status()
@@ -122,13 +106,6 @@ def refrescar_inventario():
 
 
 def obtener_inventario(force_refresh=False):
-    """
-    Devuelve inventario desde memoria.
-    Solo consulta OpenSheet si:
-    - no hay datos cargados
-    - expiró el TTL
-    - force_refresh=True
-    """
     current = now_ts()
 
     if force_refresh:
@@ -158,25 +135,16 @@ def obtener_marcas_disponibles():
 
 
 def buscar_marca_en_texto(user_text: str):
-    """
-    Detecta marcas aunque el usuario escriba texto adicional.
-    Ejemplos:
-    - toyota
-    - quiero toyota
-    - busco mazda
-    """
     user_text_norm = normalize_text(user_text)
     marcas = obtener_marcas_disponibles()
 
     if not user_text_norm:
         return None
 
-    # Exacta
     for marca in marcas:
         if normalize_text(marca) == user_text_norm:
             return marca
 
-    # Contenida en el texto
     for marca in marcas:
         marca_norm = normalize_text(marca)
         if marca_norm in user_text_norm:
@@ -198,9 +166,18 @@ def obtener_carros_por_marca(marca_buscada: str):
     return coincidencias
 
 
-# =========================
-# Leads
-# =========================
+def buscar_carro_por_id(vehicle_id: str):
+    carros = obtener_inventario()
+    vehicle_id = str(vehicle_id).strip()
+
+    for carro in carros:
+        carro_id = str(carro.get("id", "")).strip()
+        if carro_id == vehicle_id:
+            return carro
+
+    return None
+
+
 def guardar_lead(telefono: str, mensaje: str, tipo: str):
     try:
         payload = {
@@ -228,9 +205,6 @@ def guardar_lead(telefono: str, mensaje: str, tipo: str):
         print("Error guardando lead:", e)
 
 
-# =========================
-# Envío WhatsApp
-# =========================
 def send_whatsapp_payload(payload: dict):
     headers = {
         "Authorization": f"Bearer {WHATSAPP_TOKEN}",
@@ -315,10 +289,7 @@ def send_brand_list_menu(to_number: str):
     marcas = obtener_marcas_disponibles()
 
     if not marcas:
-        send_whatsapp_message(
-            to_number,
-            "No encontré marcas disponibles en este momento."
-        )
+        send_whatsapp_message(to_number, "No encontré marcas disponibles en este momento.")
         return
 
     rows = []
@@ -364,13 +335,18 @@ def send_brand_list_menu(to_number: str):
 
 
 def send_vehicle_messages(to_number: str, carros: list, marca_mostrada: str):
-    send_whatsapp_message(to_number, f"Resultados para {marca_mostrada}:")
+    send_whatsapp_message(
+        to_number,
+        f"Resultados para {marca_mostrada}:\n\n"
+        f"Te mostramos vehículos disponibles sin publicar el precio.\n"
+        f"Escribe el *ID* del vehículo que te interesa para consultar precio o disponibilidad."
+    )
 
     for carro in carros[:5]:
+        carro_id = str(carro.get("id", "")).strip()
         marca = (carro.get("marca") or "").strip()
         modelo = (carro.get("modelo") or "").strip()
         anio = (carro.get("anio") or "").strip()
-        precio = (carro.get("precio") or "").strip()
         motor = (carro.get("motor") or "").strip()
         transmision = (carro.get("transmision") or "").strip()
         millaje = (carro.get("millaje") or "").strip()
@@ -385,10 +361,11 @@ def send_vehicle_messages(to_number: str, carros: list, marca_mostrada: str):
 
         partes = [
             f"🚗 {marca} {modelo} {anio}".strip(),
-            f"💰 Precio: {precio}" if precio else "",
+            f"🆔 ID: {carro_id}" if carro_id else "",
             f"⚙️ Motor: {motor}" if motor else "",
             f"🔄 Transmisión: {transmision}" if transmision else "",
             f"📏 Millaje: {millaje}" if millaje else "",
+            "💰 Precio: consultar por este medio",
             f"📋 Descripción:\n{descripcion_formateada}" if descripcion_formateada else "",
             f"📸 Ver fotos del vehículo:\n{link_fotos}" if link_fotos else ""
         ]
@@ -398,13 +375,10 @@ def send_vehicle_messages(to_number: str, carros: list, marca_mostrada: str):
 
     send_whatsapp_message(
         to_number,
-        "Escribe *menu* para volver al menú principal o *asesor* para hablar con un vendedor."
+        "Escribe el *ID* del vehículo para consultar precio, o escribe *asesor* para hablar con un vendedor."
     )
 
 
-# =========================
-# Lógica del bot
-# =========================
 def build_advisor_link():
     text = quote("Hola vengo del bot de Importadora Los Gemelos")
     return f"https://wa.me/{ADMIN_PHONE}?text={text}"
@@ -421,24 +395,24 @@ def mostrar_vehiculos(from_number: str):
     mensaje = "🚗 Vehículos disponibles:\n\n"
 
     for carro in carros[:5]:
+        carro_id = str(carro.get("id", "")).strip()
         marca = (carro.get("marca") or "").strip()
         modelo = (carro.get("modelo") or "").strip()
         anio = (carro.get("anio") or "").strip()
-        precio = (carro.get("precio") or "").strip()
 
         mensaje += f"• {marca} {modelo} {anio}\n"
-        if precio:
-            mensaje += f"💰 {precio}\n"
+        if carro_id:
+            mensaje += f"🆔 ID: {carro_id}\n"
         mensaje += "\n"
 
-    mensaje += "Escribe la marca que buscas para ver más detalles."
+    mensaje += "Escribe la marca que buscas para ver más detalles, o escribe el *ID* para consultar un vehículo específico."
     send_whatsapp_message(from_number, mensaje)
-    set_user_state(from_number, "awaiting_brand")
+    set_user_state(from_number, "awaiting_brand_or_id")
 
 
 def iniciar_busqueda_marca(from_number: str):
     guardar_lead(from_number, "buscar_marca", "buscar_marca")
-    set_user_state(from_number, "awaiting_brand")
+    set_user_state(from_number, "awaiting_brand_or_id")
     send_brand_list_menu(from_number)
 
 
@@ -467,6 +441,34 @@ def responder_asesor(from_number: str):
     )
 
 
+def responder_precio_por_id(from_number: str, vehicle_id: str):
+    carro = buscar_carro_por_id(vehicle_id)
+
+    if not carro:
+        send_whatsapp_message(
+            from_number,
+            "No encontré un vehículo con ese ID.\n\nRevisa el código y vuelve a intentarlo o escribe *menu*."
+        )
+        return
+
+    marca = (carro.get("marca") or "").strip()
+    modelo = (carro.get("modelo") or "").strip()
+    anio = (carro.get("anio") or "").strip()
+    precio = (carro.get("precio") or "").strip()
+
+    guardar_lead(from_number, f"id:{vehicle_id}", "consulta_precio_por_id")
+
+    mensaje = (
+        f"💰 Precio del vehículo solicitado:\n\n"
+        f"🚗 {marca} {modelo} {anio}\n"
+        f"🆔 ID: {vehicle_id}\n"
+        f"💵 Precio: {precio if precio else 'No disponible en este momento'}\n\n"
+        f"Escribe *asesor* si deseas continuar con este vehículo."
+    )
+
+    send_whatsapp_message(from_number, mensaje)
+
+
 def manejar_marca(from_number: str, marca_detectada: str):
     coincidencias = obtener_carros_por_marca(marca_detectada)
 
@@ -478,7 +480,7 @@ def manejar_marca(from_number: str, marca_detectada: str):
         return
 
     guardar_lead(from_number, marca_detectada, "busqueda_marca")
-    clear_user_state(from_number)
+    set_user_state(from_number, "awaiting_vehicle_id")
     send_vehicle_messages(from_number, coincidencias, marca_detectada)
 
 
@@ -513,7 +515,12 @@ def handle_text_message(from_number: str, user_text_raw: str):
         responder_asesor(from_number)
         return
 
-    if state == "awaiting_brand":
+    # Si el usuario escribe solo números, intentamos como ID
+    if user_text.isdigit():
+        responder_precio_por_id(from_number, user_text)
+        return
+
+    if state in {"awaiting_brand", "awaiting_brand_or_id"}:
         marca_detectada = buscar_marca_en_texto(user_text)
         if marca_detectada:
             manejar_marca(from_number, marca_detectada)
@@ -585,9 +592,6 @@ def handle_interactive_message(from_number: str, interactive: dict):
                     return
 
 
-# =========================
-# Rutas Flask
-# =========================
 @app.route("/", methods=["GET"])
 def home():
     return "Bot activo", 200
