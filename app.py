@@ -456,6 +456,7 @@ def responder_precio_por_id(from_number: str, vehicle_id: str):
     anio = (carro.get("anio") or "").strip()
     precio = (carro.get("precio") or "").strip()
     descripcion = (carro.get("descripcion") or "").strip()
+    link_fotos = (carro.get("link_fotos") or "").strip()
 
     guardar_lead(from_number, f"id:{vehicle_id}", "consulta_precio_por_id")
 
@@ -464,8 +465,9 @@ def responder_precio_por_id(from_number: str, vehicle_id: str):
         f"🚗 {marca} {modelo} {anio}\n"
         f"🆔 ID: {vehicle_id}\n"
         f"📋 Descripción:\n{descripcion}\n"
+        f"📸 Ver fotos del vehículo:\n{link_fotos}"
         f"💵 Precio: {precio if precio else 'No disponible en este momento'}\n\n"
-        f"Escribe *asesor* si deseas continuar con este vehículo."
+        f"Escribe *asesor* si deseas continuar con este vehículo, o *menu* para volver a ver las opciones"
     )
 
     send_whatsapp_message(from_number, mensaje)
