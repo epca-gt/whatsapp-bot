@@ -1,6 +1,14 @@
 from flask import Flask, request, jsonify
 import requests
 import os
+import requests
+
+SHEET_URL = "https://opensheet.elk.sh/1opEhxT7aat4GnVAEBcPqze84TSZMO3W-ji2jyHP8HZc/inventario_bot"
+
+
+def obtener_inventario():
+    response = requests.get(SHEET_URL)
+    return response.json()
 
 app = Flask(__name__)
 
@@ -63,12 +71,32 @@ def get_bot_response(user_text: str) -> str:
         )
 
     if user_text == "1":
+    carros = obtener_inventario()
+
+    if not carros:
+        return "No hay vehículos disponibles en este momento."
+
+    mensaje = "🚗 Vehículos disponibles:\n\n"
+
+    for carro in carros[:5]:
+        mensaje += (
+            f"• {carro['marca']} {carro['modelo']} {carro['anio']}\n"
+            f"💰 {carro['precio']}\n\n"
+        )
+
+    mensaje += "Escribe la marca para ver más detalles."
+
+    return mensaje
+
+    for carro in obtener_inventario():
+    if user_text in carro["marca"].lower():
         return (
-            "Vehículos disponibles actualmente:\n\n"
-            "• Toyota Tacoma 2021\n"
-            "• Mazda CX-5 2022\n"
-            "• Ford Ranger 2020\n\n"
-            "Escribe *menu* para volver al menú principal."
+            f"🚗 {carro['marca']} {carro['modelo']} {carro['anio']}\n\n"
+            f"💰 Precio: {carro['precio']}\n"
+            f"⚙️ Motor: {carro['motor']}\n"
+            f"🔄 Transmisión: {carro['transmision']}\n"
+            f"📏 Millaje: {carro['millaje']}\n\n"
+            f"📸 Fotos:\n{carro['link_fotos']}"
         )
 
     if user_text == "2":
