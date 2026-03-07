@@ -71,7 +71,64 @@ def send_whatsapp_message(to_number, message_text):
     }
 
     response = requests.post(url, headers=headers, json=payload)
-    print(response.status_code, response.text)
+    print("TEXT:", response.status_code, response.text)
+
+
+def send_whatsapp_list_menu(to_number):
+    url = f"https://graph.facebook.com/v20.0/{PHONE_NUMBER_ID}/messages"
+
+    headers = {
+        "Authorization": f"Bearer {WHATSAPP_TOKEN}",
+        "Content-Type": "application/json"
+    }
+
+    payload = {
+        "messaging_product": "whatsapp",
+        "to": to_number,
+        "type": "interactive",
+        "interactive": {
+            "type": "list",
+            "body": {
+                "text": "Bienvenido a Importadora Los Gemelos 🚗\n\nSelecciona una opción:"
+            },
+            "footer": {
+                "text": "Atención automatizada"
+            },
+            "action": {
+                "button": "Selecciona la opción",
+                "sections": [
+                    {
+                        "title": "Menú principal",
+                        "rows": [
+                            {
+                                "id": "ver_vehiculos",
+                                "title": "Ver vehículos disponibles",
+                                "description": "Consulta inventario actual"
+                            },
+                            {
+                                "id": "buscar_marca",
+                                "title": "Buscar por marca",
+                                "description": "Toyota, Mazda, Nissan, etc."
+                            },
+                            {
+                                "id": "cotizar_importacion",
+                                "title": "Cotizar importación",
+                                "description": "Solicita cotización"
+                            },
+                            {
+                                "id": "hablar_asesor",
+                                "title": "Hablar con asesor",
+                                "description": "Atención personalizada"
+                            }
+                        ]
+                    }
+                ]
+            }
+        }
+    }
+
+    response = requests.post(url, headers=headers, json=payload)
+    print("LIST:", response.status_code, response.text)
 
 
 def notificar_asesor(telefono_cliente: str, mensaje_cliente: str):
@@ -113,12 +170,57 @@ def receive_message():
             message = value["messages"][0]
             from_number = message["from"]
 
+            # Texto normal
             if message["type"] == "text":
                 user_text = message["text"]["body"].strip().lower()
-                reply_text = get_bot_response(user_text, from_number)
 
-                if reply_text:
-                    send_whatsapp_message(from_number, reply_text)
+                saludos = [
+                    "hola", "buenas", "buenos dias", "buenas tardes",
+                    "buenas noches", "menu", "menú", "inicio", "start"
+                ]
+
+                if user_text in saludos:
+                    guardar_lead(from_number, user_text, "saludo")
+                    send_whatsapp_list_menu(from_number)
+                else:
+                    reply_text = get_bot_response(user_text, from_number)
+                    if reply_text:
+                        send_whatsapp_message(from_number, reply_text)
+
+            # Respuesta de lista interactiva
+            elif message["type"] == "interactive":
+                interactive = message.get("interactive", {})
+                interactive_type = interactive.get("type")
+
+                if interactive_type == "list_reply":
+                    selected_id = interactive["list_reply"]["id"]
+
+                    if selected_id == "ver_vehiculos":
+                        guardar_lead(from_number, selected_id, "ver_vehiculos")
+                        reply_text = get_bot_response("1", from_number)
+                        if reply_text:
+                            send_whatsapp_message(from_number, reply_text)
+
+                    elif selected_id == "buscar_marca":
+                        guardar_lead(from_number, selected_id, "buscar_marca")
+                        reply_text = get_bot_response("2", from_number)
+                        if reply_text:
+                            send_whatsapp_message(from_number, reply_text)
+
+                    elif selected_id == "cotizar_importacion":
+                        guardar_lead(from_number, selected_id, "cotizar_importacion")
+                        reply_text = get_bot_response("3", from_number)
+                        if reply_text:
+                            send_whatsapp_message(from_number, reply_text)
+
+                    elif selected_id == "hablar_asesor":
+                        guardar_lead(from_number, selected_id, "quiere_asesor")
+                        notificar_asesor(from_number, "Cliente solicitó hablar con asesor")
+                        reply_text = (
+                            "Un asesor te atenderá en breve. 👨‍💼\n\n"
+                            "Ya notificamos a un asesor para que te contacte."
+                        )
+                        send_whatsapp_message(from_number, reply_text)
 
     except Exception as e:
         print("Error procesando mensaje:", e)
@@ -127,22 +229,6 @@ def receive_message():
 
 
 def get_bot_response(user_text: str, from_number: str):
-    saludos = [
-        "hola", "buenas", "buenos dias", "buenas tardes",
-        "buenas noches", "menu", "menú", "inicio", "start"
-    ]
-
-    if user_text in saludos:
-        guardar_lead(from_number, user_text, "saludo")
-        return (
-            "Bienvenido a Importadora Los Gemelos 🚗\n\n"
-            "Escribe una opción:\n"
-            "1️⃣ Ver vehículos disponibles\n"
-            "2️⃣ Buscar por marca\n"
-            "3️⃣ Cotizar importación\n"
-            "4️⃣ Hablar con asesor"
-        )
-
     if user_text == "1":
         guardar_lead(from_number, user_text, "ver_vehiculos")
         carros = obtener_inventario()
@@ -231,16 +317,15 @@ def get_bot_response(user_text: str, from_number: str):
                 f"🔄 Transmisión: {transmision}\n"
                 f"📏 Millaje: {millaje}\n"
                 f"{'📋 Descripción:\n' + descripcion_formateada + '\n' if descripcion_formateada else ''}"
-                f"📸 Fotos: {link_fotos}"
+                f"📸 Ver fotos del vehículo:\n{link_fotos}"
             )
 
             send_whatsapp_message(from_number, mensaje)
 
         return "Escribe *menu* para volver al menú principal."
 
-    guardar_lead(from_number, user_text, "mensaje_general")
     return "No entendí tu mensaje.\n\nEscribe *menu* para ver las opciones disponibles."
-
+    
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
