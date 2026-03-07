@@ -335,48 +335,32 @@ def send_brand_list_menu(to_number: str):
 
 
 def send_vehicle_messages(to_number: str, carros: list, marca_mostrada: str):
-    send_whatsapp_message(
-        to_number,
-        f"Resultados para {marca_mostrada}:\n\n"
-        f"Te mostramos vehículos disponibles sin publicar el precio.\n"
-        f"Escribe el *ID* del vehículo que te interesa para consultar precio o disponibilidad."
-    )
+    if not carros:
+        send_whatsapp_message(
+            to_number,
+            f"No encontré vehículos de {marca_mostrada} en este momento."
+        )
+        return
+
+    mensaje = f"🚗 Vehículos disponibles de {marca_mostrada}:\n\n"
 
     for carro in carros:
         carro_id = str(carro.get("id", "")).strip()
         marca = (carro.get("marca") or "").strip()
         modelo = (carro.get("modelo") or "").strip()
         anio = (carro.get("anio") or "").strip()
-        motor = (carro.get("motor") or "").strip()
-        transmision = (carro.get("transmision") or "").strip()
-        millaje = (carro.get("millaje") or "").strip()
-        link_fotos = (carro.get("link_fotos") or "").strip()
-        descripcion = (carro.get("descripcion") or "").strip()
 
-        descripcion_formateada = ""
-        if descripcion:
-            lineas = [line.strip() for line in descripcion.split("\n") if line.strip()]
-            if lineas:
-                descripcion_formateada = "\n".join(lineas)
+        mensaje += f"• {marca} {modelo} {anio}\n"
+        if carro_id:
+            mensaje += f"🆔 ID: {carro_id}\n"
+        mensaje += "\n"
 
-        partes = [
-            f"🚗 {marca} {modelo} {anio}".strip(),
-            f"🆔 ID: {carro_id}" if carro_id else "",
-            f"⚙️ Motor: {motor}" if motor else "",
-            f"🔄 Transmisión: {transmision}" if transmision else "",
-            f"📏 Millaje: {millaje}" if millaje else "",
-            "💰 Precio: consultar por este medio",
-            f"📋 Descripción:\n{descripcion_formateada}" if descripcion_formateada else "",
-            f"📸 Ver fotos del vehículo:\n{link_fotos}" if link_fotos else ""
-        ]
-
-        mensaje = "\n".join([p for p in partes if p])
-        send_whatsapp_message(to_number, mensaje)
-
-    send_whatsapp_message(
-        to_number,
-        "Escribe el *ID* del vehículo para consultar precio, o escribe *asesor* para hablar con un vendedor."
+    mensaje += (
+        "Escribe el *ID* del vehículo para consultar precio o disponibilidad, "
+        "o escribe *menu* para volver al menú principal."
     )
+
+    send_whatsapp_message(to_number, mensaje)
 
 
 def build_advisor_link():
@@ -460,16 +444,17 @@ def responder_precio_por_id(from_number: str, vehicle_id: str):
 
     guardar_lead(from_number, f"id:{vehicle_id}", "consulta_precio_por_id")
 
-    mensaje = (
-        f"💰 Precio del vehículo solicitado:\n\n"
-        f"🚗 {marca} {modelo} {anio}\n"
-        f"🆔 ID: {vehicle_id}\n"
-        f"📋 Descripción:\n{descripcion}\n"
-        f"📸 Ver fotos del vehículo:\n{link_fotos}\n"
-        f"💵 Precio: {precio if precio else 'No disponible en este momento'}\n\n"
-        f"Escribe *asesor* si deseas continuar con este vehículo, o *menu* para volver a ver las opciones."
-    )
+    partes = [
+        "💰 Precio del vehículo solicitado:\n",
+        f"🚗 {marca} {modelo} {anio}",
+        f"🆔 ID: {vehicle_id}",
+        f"📋 Descripción:\n{descripcion}" if descripcion else "",
+        f"📸 Ver fotos del vehículo:\n{link_fotos}" if link_fotos else "",
+        f"💵 Precio: {precio if precio else 'No disponible en este momento'}",
+        "\nEscribe *asesor* si deseas continuar con este vehículo, o *menu* para volver a ver las opciones."
+    ]
 
+    mensaje = "\n".join([p for p in partes if p])
     send_whatsapp_message(from_number, mensaje)
 
 
@@ -503,29 +488,16 @@ def handle_text_message(from_number: str, user_text_raw: str):
         send_whatsapp_list_menu(from_number)
         return
 
-    if user_text in {"1", "ver vehiculos", "ver vehículos"}:
-        mostrar_vehiculos(from_number)
-        return
-
-    if user_text in {"2", "buscar marca"}:
-        iniciar_busqueda_marca(from_number)
-        return
-
-    if user_text in {"3", "cotizar importacion", "cotizar importación"}:
-        responder_cotizacion(from_number)
-        return
-
-    if user_text in {"4", "asesor", "hablar con asesor"}:
+    if user_text in {"asesor", "hablar con asesor"}:
         responder_asesor(from_number)
         return
 
-    # Intentar interpretar el mensaje como ID de vehículo
     carro = buscar_carro_por_id(user_text_raw.strip())
     if carro:
         responder_precio_por_id(from_number, user_text_raw.strip())
-    return
+        return
 
-    if state in {"awaiting_brand", "awaiting_brand_or_id"}:
+    if state in {"awaiting_brand", "awaiting_brand_or_id", "awaiting_vehicle_id"}:
         marca_detectada = buscar_marca_en_texto(user_text)
         if marca_detectada:
             manejar_marca(from_number, marca_detectada)
