@@ -465,9 +465,9 @@ def responder_precio_por_id(from_number: str, vehicle_id: str):
         f"🚗 {marca} {modelo} {anio}\n"
         f"🆔 ID: {vehicle_id}\n"
         f"📋 Descripción:\n{descripcion}\n"
-        f"📸 Ver fotos del vehículo:\n{link_fotos}"
+        f"📸 Ver fotos del vehículo:\n{link_fotos}\n"
         f"💵 Precio: {precio if precio else 'No disponible en este momento'}\n\n"
-        f"Escribe *asesor* si deseas continuar con este vehículo, o *menu* para volver a ver las opciones"
+        f"Escribe *asesor* si deseas continuar con este vehículo, o *menu* para volver a ver las opciones."
     )
 
     send_whatsapp_message(from_number, mensaje)
