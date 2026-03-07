@@ -100,27 +100,27 @@ def send_whatsapp_list_menu(to_number):
                     {
                         "title": "Menú principal",
                         "rows": [
-                            {
-                                "id": "ver_vehiculos",
-                                "title": "Ver vehículos disponibles",
-                                "description": "Consulta inventario actual"
-                            },
-                            {
-                                "id": "buscar_marca",
-                                "title": "Buscar por marca",
-                                "description": "Toyota, Mazda, Nissan, etc."
-                            },
-                            {
-                                "id": "cotizar_importacion",
-                                "title": "Cotizar importación",
-                                "description": "Solicita cotización"
-                            },
-                            {
-                                "id": "hablar_asesor",
-                                "title": "Hablar con asesor",
-                                "description": "Atención personalizada"
-                            }
-                        ]
+    {
+        "id": "ver_vehiculos",
+        "title": "Ver vehículos",
+        "description": "Inventario disponible"
+    },
+    {
+        "id": "buscar_marca",
+        "title": "Buscar marca",
+        "description": "Toyota, Mazda, Nissan"
+    },
+    {
+        "id": "cotizar_importacion",
+        "title": "Cotizar importación",
+        "description": "Solicita cotización"
+    },
+    {
+        "id": "hablar_asesor",
+        "title": "Hablar con asesor",
+        "description": "Atención personalizada"
+    }
+]
                     }
                 ]
             }
