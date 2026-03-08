@@ -206,6 +206,79 @@ def buscar_carro_por_id(vehicle_id: str):
 
     return None
 
+def parse_price_value(price_text):
+    if price_text is None:
+        return None
+
+    text = str(price_text).strip().lower()
+    if not text:
+        return None
+
+    # Q180,000 / $23,000 / 180000
+    text = text.replace("gtq", "").replace("quetzales", "").replace("q", "")
+    text = text.replace("usd", "").replace("$", "")
+    text = text.replace(",", "").replace(" ", "")
+
+    match = re.search(r"(\d+(?:\.\d+)?)", text)
+    if not match:
+        return None
+
+    try:
+        return float(match.group(1))
+    except:
+        return None
+
+
+def extraer_presupuesto(texto: str):
+    if not texto:
+        return None
+
+    texto = texto.strip().lower()
+
+    patrones = [
+        r"presupuesto[:\s]*q?\$?\s*([\d,]+(?:\.\d+)?)",
+        r"maximo[:\s]*q?\$?\s*([\d,]+(?:\.\d+)?)",
+        r"máximo[:\s]*q?\$?\s*([\d,]+(?:\.\d+)?)",
+        r"hasta[:\s]*q?\$?\s*([\d,]+(?:\.\d+)?)",
+        r"\bq\s*([\d,]+(?:\.\d+)?)\b",
+        r"\$\s*([\d,]+(?:\.\d+)?)\b",
+    ]
+
+    for patron in patrones:
+        match = re.search(patron, texto, re.IGNORECASE)
+        if match:
+            try:
+                return float(match.group(1).replace(",", ""))
+            except:
+                pass
+
+    # Si el usuario manda solo un número grande, por ejemplo: 150000
+    solo_numero = re.fullmatch(r"[\d,]+(?:\.\d+)?", texto)
+    if solo_numero:
+        try:
+            valor = float(texto.replace(",", ""))
+            if valor >= 1000:
+                return valor
+        except:
+            pass
+
+    return None
+
+
+def obtener_carros_por_presupuesto(presupuesto_max: float):
+    carros = obtener_inventario()
+    coincidencias = []
+
+    for carro in carros:
+        precio_valor = parse_price_value(carro.get("precio", ""))
+
+        if precio_valor is None:
+            continue
+
+        if precio_valor <= presupuesto_max:
+            coincidencias.append(carro)
+
+    return coincidencias
 
 def extraer_vehicle_id(texto: str):
     if not texto:
@@ -355,6 +428,11 @@ def send_whatsapp_list_menu(to_number: str):
                                 "description": "Toyota, Mazda, Nissan y más"
                             },
                             {
+                                "id": "buscar_presupuesto",
+                                "title": "Buscar por presupuesto",
+                                "description": "Ej. Q150,000"
+                            },
+                            {
                                 "id": "cotizar_importacion",
                                 "title": "Cotizar importación",
                                 "description": "Solicita una cotización"
@@ -491,6 +569,17 @@ def iniciar_busqueda_marca(from_number: str):
     set_user_state(from_number, "awaiting_brand_or_id")
     send_brand_list_menu(from_number)
 
+def iniciar_busqueda_presupuesto(from_number: str):
+    guardar_lead(from_number, "buscar_presupuesto", "buscar_presupuesto")
+    set_user_state(from_number, "awaiting_budget")
+    send_whatsapp_message(
+        from_number,
+        "Envíanos tu presupuesto máximo.\n\n"
+        "Ejemplos:\n"
+        "• Q150000\n"
+        "• presupuesto 180000\n"
+        "• máximo 200000"
+    )
 
 def responder_cotizacion(from_number: str):
     guardar_lead(from_number, "cotizar_importacion", "cotizar_importacion")
@@ -565,6 +654,47 @@ def manejar_marca(from_number: str, marca_detectada: str):
     send_vehicle_messages(from_number, coincidencias, marca_detectada)
 
 
+def manejar_presupuesto(from_number: str, presupuesto: float):
+    coincidencias = obtener_carros_por_presupuesto(presupuesto)
+
+    if not coincidencias:
+        send_whatsapp_message(
+            from_number,
+            f"No encontré vehículos dentro de un presupuesto de Q{presupuesto:,.0f}.\n\n"
+            "Puedes probar con otro monto o escribir *menu*."
+        )
+        return
+
+    guardar_lead(from_number, f"presupuesto:{presupuesto}", "busqueda_presupuesto")
+    set_user_state(from_number, "awaiting_vehicle_id", {"last_budget": presupuesto})
+
+    mensaje = f"💰 Vehículos dentro de tu presupuesto de Q{presupuesto:,.0f}:\n\n"
+
+    for carro in coincidencias[:15]:
+        carro_id = str(carro.get("id", "")).strip()
+        marca = (carro.get("marca") or "").strip()
+        modelo = (carro.get("modelo") or "").strip()
+        anio = (carro.get("anio") or "").strip()
+        precio = (carro.get("precio") or "").strip()
+
+        mensaje += f"• {marca} {modelo} {anio}\n"
+        if carro_id:
+            mensaje += f"🆔 ID: {carro_id}\n"
+        if precio:
+            mensaje += f"💵 {precio}\n"
+        mensaje += "\n"
+
+    if len(coincidencias) > 15:
+        mensaje += f"Y hay {len(coincidencias) - 15} más disponibles.\n\n"
+
+    mensaje += (
+        "Escribe el *ID* del vehículo que te interese para ver detalles, "
+        "o escribe una *marca* para filtrar más."
+    )
+
+    send_whatsapp_message(from_number, mensaje)
+
+
 def is_semantic_duplicate(from_number: str, user_text_raw: str) -> bool:
     normalized = normalize_text(user_text_raw)
     if not normalized:
@@ -584,6 +714,7 @@ def is_semantic_duplicate(from_number: str, user_text_raw: str) -> bool:
 def handle_text_message(from_number: str, user_text_raw: str):
     user_text = normalize_text(user_text_raw)
     state = get_user_state(from_number)
+    presupuesto = extraer_presupuesto(user_text_raw)
 
     saludos = {
         "hola", "buenas", "buenos dias", "buenas tardes",
@@ -600,10 +731,18 @@ def handle_text_message(from_number: str, user_text_raw: str):
         responder_asesor(from_number)
         return
 
+    if state == "awaiting_budget" and presupuesto:
+    manejar_presupuesto(from_number, presupuesto)
+    return
+
     vehicle_id = extraer_vehicle_id(user_text_raw.strip())
     if vehicle_id:
         responder_precio_por_id(from_number, vehicle_id)
         return
+
+    if presupuesto:
+    manejar_presupuesto(from_number, presupuesto)
+    return
 
     if state in {"awaiting_brand", "awaiting_brand_or_id", "awaiting_vehicle_id"}:
         marca_detectada = buscar_marca_en_texto(user_text)
@@ -645,6 +784,10 @@ def handle_interactive_message(from_number: str, interactive: dict):
 
         if selected_id == "buscar_marca":
             iniciar_busqueda_marca(from_number)
+            return
+
+        if selected_id == "buscar_presupuesto":
+            iniciar_busqueda_presupuesto(from_number)
             return
 
         if selected_id == "cotizar_importacion":
