@@ -451,6 +451,40 @@ def send_whatsapp_list_menu(to_number: str):
     return send_whatsapp_payload(payload)
 
 
+def send_import_interest_buttons(to_number: str):
+    payload = {
+        "messaging_product": "whatsapp",
+        "to": to_number,
+        "type": "interactive",
+        "interactive": {
+            "type": "button",
+            "body": {
+                "text": "¿Te gustaría que un asesor te ayude a buscar opciones según el vehículo que tienes en mente?"
+            },
+            "action": {
+                "buttons": [
+                    {
+                        "type": "reply",
+                        "reply": {
+                            "id": "import_yes",
+                            "title": "Sí, quiero asesor"
+                        }
+                    },
+                    {
+                        "type": "reply",
+                        "reply": {
+                            "id": "import_no",
+                            "title": "No por ahora"
+                        }
+                    }
+                ]
+            }
+        }
+    }
+
+    send_whatsapp_payload(payload)
+
+
 def send_brand_list_menu(to_number: str):
     marcas = obtener_marcas_disponibles()
 
@@ -580,21 +614,48 @@ def iniciar_busqueda_presupuesto(from_number: str):
         "• presupuesto 180000\n"
         "• máximo 200000"
     )
-
 def responder_cotizacion(from_number: str):
-    guardar_lead(from_number, "cotizar_importacion", "cotizar_importacion")
-    set_user_state(from_number, "awaiting_import_quote")
-    send_whatsapp_message(
-        from_number,
-        "Para cotizar importación, envíanos:\n\n"
-        "• Marca\n"
-        "• Modelo\n"
-        "• Año aproximado\n"
-        "• Presupuesto\n\n"
-        "Ejemplo:\n"
-        "Toyota Tacoma 2021, presupuesto Q180,000"
+    guardar_lead(from_number, "orientacion_importacion", "orientacion_importacion")
+
+    mensaje = (
+        "🚗 *Importación de vehículos por encargo*\n\n"
+        "Para que tengas una idea clara, el costo de importar un vehículo se compone de:\n\n"
+        "• Compra del vehículo en subasta de USA\n"
+        "• Impuestos en Guatemala: *32% sobre el valor de compra*\n"
+        "• Flete aproximado desde USA: *US$1,200 a US$1,600*\n"
+        "• Grúa desde puerto hacia nuestro predio: *Q800*\n"
+        "• Honorarios de gestión: *Q4,000*\n\n"
+        "*El único valor que realmente varía es el precio de compra del vehículo en USA.*\n\n"
+        "*Ejemplos orientativos:*\n\n"
+        "🔹 *Ejemplo 1*\n"
+        "Compra en subasta: Q35,000\n"
+        "Impuestos (32%): Q11,200\n"
+        "Flete estimado: Q9,000 a Q12,000\n"
+        "Grúa: Q800\n"
+        "Honorarios: Q4,000\n"
+        "*Total aproximado:* Q60,000 a Q63,000\n\n"
+        "🔹 *Ejemplo 2*\n"
+        "Compra en subasta: Q50,000\n"
+        "Impuestos (32%): Q16,000\n"
+        "Flete estimado: Q9,000 a Q12,000\n"
+        "Grúa: Q800\n"
+        "Honorarios: Q4,000\n"
+        "*Total aproximado:* Q79,800 a Q82,800\n\n"
+        "🔹 *Ejemplo 3*\n"
+        "Compra en subasta: Q70,000\n"
+        "Impuestos (32%): Q22,400\n"
+        "Flete estimado: Q9,000 a Q12,000\n"
+        "Grúa: Q800\n"
+        "Honorarios: Q4,000\n"
+        "*Total aproximado:* Q106,200 a Q109,200\n\n"
+        "Cada vehículo puede variar dependiendo de modelo, año, condición y precio en subasta.\n\n"
+        "Tú eliges el carro y el presupuesto, nosotros nos encargamos de buscarlo, comprarlo e importarlo por ti.\n\n"
+        "Si ya tienes un vehículo en mente, escríbenos cuál buscas y un asesor te orienta."
     )
 
+    send_whatsapp_message(from_number, mensaje)
+     # botones
+    send_import_interest_buttons(from_number)
 
 def responder_asesor(from_number: str):
     guardar_lead(from_number, "asesor", "quiere_asesor")
@@ -810,6 +871,18 @@ def handle_interactive_message(from_number: str, interactive: dict):
     if interactive_type == "button_reply":
         button_reply = interactive.get("button_reply", {})
         selected_id = button_reply.get("id", "")
+
+        if selected_id == "import_yes":
+            guardar_lead(from_number, "quiere_asesor_importacion", "asesor_importacion")
+            responder_asesor(from_number)
+            return
+
+        if selected_id == "import_no":
+            send_whatsapp_message(
+                from_number,
+                "Perfecto 👍\n\nSi en algún momento deseas explorar opciones de importación, escríbenos y con gusto te orientamos."
+    )
+            return
 
         if selected_id.startswith("marca_"):
             marca_slug = selected_id.replace("marca_", "").replace("_", " ").strip()
