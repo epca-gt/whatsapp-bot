@@ -556,7 +556,7 @@ def send_vehicle_messages(to_number: str, carros: list, marca_mostrada: str):
         mensaje += "\n"
 
     mensaje += (
-        "Escribe el *ID* del vehículo para consultar precio o disponibilidad, "
+        "Escribe el *ID* del vehículo para consultar Informacion y Precio, "
         "o escribe *menu* para volver al menú principal."
     )
 
