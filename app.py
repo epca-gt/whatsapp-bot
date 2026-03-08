@@ -732,8 +732,8 @@ def handle_text_message(from_number: str, user_text_raw: str):
         return
 
     if state == "awaiting_budget" and presupuesto:
-    manejar_presupuesto(from_number, presupuesto)
-    return
+        manejar_presupuesto(from_number, presupuesto)
+        return
 
     vehicle_id = extraer_vehicle_id(user_text_raw.strip())
     if vehicle_id:
@@ -741,8 +741,8 @@ def handle_text_message(from_number: str, user_text_raw: str):
         return
 
     if presupuesto:
-    manejar_presupuesto(from_number, presupuesto)
-    return
+        manejar_presupuesto(from_number, presupuesto)
+        return
 
     if state in {"awaiting_brand", "awaiting_brand_or_id", "awaiting_vehicle_id"}:
         marca_detectada = buscar_marca_en_texto(user_text)
