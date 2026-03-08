@@ -556,7 +556,7 @@ def send_vehicle_messages(to_number: str, carros: list, marca_mostrada: str):
         mensaje += "\n"
 
     mensaje += (
-        "Escribe el *ID* del vehículo para consultar Informacion y Precio, "
+        "Escribe el *ID* del vehículo para consultar Informacion y precio, "
         "o escribe *menu* para volver al menú principal."
     )
 
@@ -591,7 +591,7 @@ def mostrar_vehiculos(from_number: str):
 
     mensaje += (
         "Puedes escribir una *marca* para filtrar resultados "
-        "o escribir el *ID* para consultar precio y disponibilidad."
+        "o escribir el *ID* para consultar Informacion y precio."
     )
 
     send_whatsapp_message(from_number, mensaje)
