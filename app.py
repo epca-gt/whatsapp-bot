@@ -4,6 +4,7 @@ import os
 import json
 import re
 import time
+import unicodedata
 from datetime import datetime
 from urllib.parse import quote
 
@@ -24,6 +25,8 @@ REQUEST_TIMEOUT = 15
 INVENTORY_CACHE_TTL = 300
 PROCESSED_MESSAGE_TTL = 600
 USER_SESSION_TTL = 1800
+SEMANTIC_DUPLICATE_TTL = 20
+WHATSAPP_TEXT_LIMIT = 3500  # margen conservador
 
 inventory_cache = {
     "data": [],
@@ -32,6 +35,7 @@ inventory_cache = {
 }
 
 processed_messages = {}
+recent_user_messages = {}
 user_sessions = {}
 
 
@@ -39,9 +43,19 @@ def now_ts():
     return time.time()
 
 
+def strip_accents(text: str) -> str:
+    if not text:
+        return ""
+    return "".join(
+        c for c in unicodedata.normalize("NFD", text)
+        if unicodedata.category(c) != "Mn"
+    )
+
+
 def normalize_text(text: str) -> str:
     if not text:
         return ""
+    text = strip_accents(text)
     text = text.strip().lower()
     text = re.sub(r"\s+", " ", text)
     return text
@@ -49,12 +63,20 @@ def normalize_text(text: str) -> str:
 
 def cleanup_processed_messages():
     current = now_ts()
-    expired = [
+
+    expired_ids = [
         msg_id for msg_id, ts in processed_messages.items()
         if current - ts > PROCESSED_MESSAGE_TTL
     ]
-    for msg_id in expired:
+    for msg_id in expired_ids:
         processed_messages.pop(msg_id, None)
+
+    expired_semantic = [
+        key for key, ts in recent_user_messages.items()
+        if current - ts > SEMANTIC_DUPLICATE_TTL
+    ]
+    for key in expired_semantic:
+        recent_user_messages.pop(key, None)
 
 
 def cleanup_user_sessions():
@@ -67,17 +89,24 @@ def cleanup_user_sessions():
         user_sessions.pop(phone, None)
 
 
-def set_user_state(phone: str, state: str):
-    user_sessions[phone] = {
-        "state": state,
-        "updated_at": now_ts()
-    }
+def set_user_state(phone: str, state: str, extra: dict = None):
+    session = user_sessions.get(phone, {})
+    session["state"] = state
+    session["updated_at"] = now_ts()
+
+    if extra:
+        session.update(extra)
+
+    user_sessions[phone] = session
+
+
+def get_user_session(phone: str) -> dict:
+    cleanup_user_sessions()
+    return user_sessions.get(phone, {})
 
 
 def get_user_state(phone: str) -> str:
-    cleanup_user_sessions()
-    session = user_sessions.get(phone, {})
-    return session.get("state", "")
+    return get_user_session(phone).get("state", "")
 
 
 def clear_user_state(phone: str):
@@ -94,14 +123,14 @@ def refrescar_inventario():
             inventory_cache["data"] = data
             inventory_cache["timestamp"] = now_ts()
             inventory_cache["last_success"] = now_ts()
-            print(f"Inventario actualizado. Registros: {len(data)}")
+            print(f"[INFO] Inventario actualizado. Registros: {len(data)}")
             return data
 
-        print("Respuesta de inventario inválida.")
+        print("[WARN] Respuesta de inventario inválida.")
         return inventory_cache["data"]
 
     except Exception as e:
-        print("Error refrescando inventario:", e)
+        print("[ERROR] Error refrescando inventario:", e)
         return inventory_cache["data"]
 
 
@@ -131,7 +160,7 @@ def obtener_marcas_disponibles():
         if marca_original and marca_normalizada not in marcas_map:
             marcas_map[marca_normalizada] = marca_original
 
-    return sorted(marcas_map.values(), key=lambda x: x.lower())
+    return sorted(marcas_map.values(), key=lambda x: normalize_text(x))
 
 
 def buscar_marca_en_texto(user_text: str):
@@ -178,6 +207,36 @@ def buscar_carro_por_id(vehicle_id: str):
     return None
 
 
+def extraer_vehicle_id(texto: str):
+    if not texto:
+        return None
+
+    texto = texto.strip()
+
+    # Exacto
+    carro = buscar_carro_por_id(texto)
+    if carro:
+        return texto
+
+    # Patrones tipo: ID 123 / id: 123 / vehículo 123
+    patrones = [
+        r"\bid[:\s#-]*([a-zA-Z0-9_-]+)\b",
+        r"\bvehiculo[:\s#-]*([a-zA-Z0-9_-]+)\b",
+        r"\bvehículo[:\s#-]*([a-zA-Z0-9_-]+)\b",
+        r"\bcodigo[:\s#-]*([a-zA-Z0-9_-]+)\b",
+        r"\bcódigo[:\s#-]*([a-zA-Z0-9_-]+)\b",
+    ]
+
+    for patron in patrones:
+        match = re.search(patron, texto, re.IGNORECASE)
+        if match:
+            posible_id = match.group(1).strip()
+            if buscar_carro_por_id(posible_id):
+                return posible_id
+
+    return None
+
+
 def guardar_lead(telefono: str, mensaje: str, tipo: str):
     try:
         payload = {
@@ -198,11 +257,11 @@ def guardar_lead(telefono: str, mensaje: str, tipo: str):
             timeout=REQUEST_TIMEOUT
         )
 
-        print("Lead guardado:", response.status_code)
-        print("Respuesta Apps Script:", response.text)
+        print(f"[INFO] Lead guardado: {response.status_code}")
+        print("[INFO] Respuesta Apps Script:", response.text)
 
     except Exception as e:
-        print("Error guardando lead:", e)
+        print("[ERROR] Error guardando lead:", e)
 
 
 def send_whatsapp_payload(payload: dict):
@@ -218,23 +277,52 @@ def send_whatsapp_payload(payload: dict):
             json=payload,
             timeout=REQUEST_TIMEOUT
         )
-        print("WA:", response.status_code, response.text)
+        print("[WA]", response.status_code, response.text)
         return response
     except Exception as e:
-        print("Error enviando mensaje WhatsApp:", e)
+        print("[ERROR] Error enviando mensaje WhatsApp:", e)
         return None
 
 
+def split_message(text: str, limit: int = WHATSAPP_TEXT_LIMIT):
+    if len(text) <= limit:
+        return [text]
+
+    chunks = []
+    current = []
+
+    for block in text.split("\n"):
+        candidate = ("\n".join(current + [block])).strip()
+
+        if len(candidate) <= limit:
+            current.append(block)
+        else:
+            if current:
+                chunks.append("\n".join(current).strip())
+            current = [block]
+
+    if current:
+        chunks.append("\n".join(current).strip())
+
+    return chunks
+
+
 def send_whatsapp_message(to_number: str, message_text: str):
-    payload = {
-        "messaging_product": "whatsapp",
-        "to": to_number,
-        "type": "text",
-        "text": {
-            "body": message_text
+    parts = split_message(message_text)
+
+    last_response = None
+    for part in parts:
+        payload = {
+            "messaging_product": "whatsapp",
+            "to": to_number,
+            "type": "text",
+            "text": {
+                "body": part
+            }
         }
-    }
-    return send_whatsapp_payload(payload)
+        last_response = send_whatsapp_payload(payload)
+
+    return last_response
 
 
 def send_whatsapp_list_menu(to_number: str):
@@ -245,7 +333,7 @@ def send_whatsapp_list_menu(to_number: str):
         "interactive": {
             "type": "list",
             "body": {
-                "text": "Bienvenido a Importadora Los Gemelos y El Fer 🚗\n\nSelecciona una opción:"
+                "text": "Bienvenido a Importadora Los Gemelos y Fer 🚗\n\nSelecciona una opción:"
             },
             "footer": {
                 "text": "Atención automatizada"
@@ -330,7 +418,7 @@ def send_brand_list_menu(to_number: str):
         restantes = ", ".join(marcas[10:])
         send_whatsapp_message(
             to_number,
-            f"También puedes escribir manualmente estas marcas: {restantes}"
+            f"También puedes escribir manualmente estas marcas:\n{restantes}"
         )
 
 
@@ -364,7 +452,7 @@ def send_vehicle_messages(to_number: str, carros: list, marca_mostrada: str):
 
 
 def build_advisor_link():
-    text = quote("Hola vengo del bot de Importadora Los Gemelos")
+    text = quote("Hola, vengo del bot de Importadora Los Gemelos y El Fer")
     return f"https://wa.me/{ADMIN_PHONE}?text={text}"
 
 
@@ -389,7 +477,11 @@ def mostrar_vehiculos(from_number: str):
             mensaje += f"🆔 ID: {carro_id}\n"
         mensaje += "\n"
 
-    mensaje += "Escribe la marca que buscas para ver más detalles, o escribe el *ID* para consultar un vehículo específico."
+    mensaje += (
+        "Puedes escribir una *marca* para filtrar resultados "
+        "o escribir el *ID* para consultar precio y disponibilidad."
+    )
+
     send_whatsapp_message(from_number, mensaje)
     set_user_state(from_number, "awaiting_brand_or_id")
 
@@ -469,8 +561,24 @@ def manejar_marca(from_number: str, marca_detectada: str):
         return
 
     guardar_lead(from_number, marca_detectada, "busqueda_marca")
-    set_user_state(from_number, "awaiting_vehicle_id")
+    set_user_state(from_number, "awaiting_vehicle_id", {"last_brand": marca_detectada})
     send_vehicle_messages(from_number, coincidencias, marca_detectada)
+
+
+def is_semantic_duplicate(from_number: str, user_text_raw: str) -> bool:
+    normalized = normalize_text(user_text_raw)
+    if not normalized:
+        return False
+
+    key = f"{from_number}|{normalized}"
+    current = now_ts()
+
+    previous = recent_user_messages.get(key)
+    if previous and (current - previous) <= SEMANTIC_DUPLICATE_TTL:
+        return True
+
+    recent_user_messages[key] = current
+    return False
 
 
 def handle_text_message(from_number: str, user_text_raw: str):
@@ -492,9 +600,9 @@ def handle_text_message(from_number: str, user_text_raw: str):
         responder_asesor(from_number)
         return
 
-    carro = buscar_carro_por_id(user_text_raw.strip())
-    if carro:
-        responder_precio_por_id(from_number, user_text_raw.strip())
+    vehicle_id = extraer_vehicle_id(user_text_raw.strip())
+    if vehicle_id:
+        responder_precio_por_id(from_number, vehicle_id)
         return
 
     if state in {"awaiting_brand", "awaiting_brand_or_id", "awaiting_vehicle_id"}:
@@ -519,7 +627,8 @@ def handle_text_message(from_number: str, user_text_raw: str):
 
     send_whatsapp_message(
         from_number,
-        "No entendí tu mensaje.\n\nEscribe *menu* para ver las opciones disponibles."
+        "No entendí tu mensaje.\n\n"
+        "Escribe *menu* para ver las opciones disponibles o envía una *marca* o un *ID* de vehículo."
     )
 
 
@@ -569,9 +678,51 @@ def handle_interactive_message(from_number: str, interactive: dict):
                     return
 
 
+def process_single_message(message: dict):
+    from_number = message.get("from")
+    message_id = message.get("id")
+    message_type = message.get("type")
+
+    if not from_number:
+        return "ok_no_from"
+
+    if message_id:
+        if message_id in processed_messages:
+            print("[INFO] Mensaje duplicado por ID ignorado:", message_id)
+            return "duplicate_ignored"
+        processed_messages[message_id] = now_ts()
+
+    if message_type == "text":
+        user_text_raw = message.get("text", {}).get("body", "").strip()
+
+        if is_semantic_duplicate(from_number, user_text_raw):
+            print("[INFO] Mensaje duplicado semántico ignorado:", from_number, user_text_raw)
+            return "semantic_duplicate_ignored"
+
+        handle_text_message(from_number, user_text_raw)
+        return "ok_text"
+
+    if message_type == "interactive":
+        interactive = message.get("interactive", {})
+        handle_interactive_message(from_number, interactive)
+        return "ok_interactive"
+
+    print("[INFO] Tipo de mensaje ignorado:", message_type)
+    return f"ignored_{message_type}"
+
+
 @app.route("/", methods=["GET"])
 def home():
     return "Bot activo", 200
+
+
+@app.route("/health", methods=["GET"])
+def health():
+    return jsonify({
+        "status": "ok",
+        "inventory_items": len(inventory_cache["data"]),
+        "inventory_last_success": inventory_cache["last_success"]
+    }), 200
 
 
 @app.route("/refresh-inventory", methods=["GET"])
@@ -600,43 +751,35 @@ def receive_message():
     cleanup_user_sessions()
 
     data = request.get_json(silent=True) or {}
+    results = []
 
     try:
-        entry = (data.get("entry") or [])[0]
-        changes = (entry.get("changes") or [])[0]
-        value = changes.get("value", {})
+        entries = data.get("entry", [])
 
-        if "messages" not in value:
+        for entry in entries:
+            changes = entry.get("changes", [])
+
+            for change in changes:
+                value = change.get("value", {})
+                messages = value.get("messages", [])
+
+                if not messages:
+                    continue
+
+                for message in messages:
+                    result = process_single_message(message)
+                    results.append(result)
+
+        if not results:
             return jsonify({"status": "ok_no_messages"}), 200
 
-        message = value["messages"][0]
-        from_number = message.get("from")
-        message_id = message.get("id")
-        message_type = message.get("type")
-
-        if not from_number:
-            return jsonify({"status": "ok_no_from"}), 200
-
-        if message_id:
-            if message_id in processed_messages:
-                print("Mensaje duplicado ignorado:", message_id)
-                return jsonify({"status": "duplicate_ignored"}), 200
-            processed_messages[message_id] = now_ts()
-
-        if message_type == "text":
-            user_text_raw = message.get("text", {}).get("body", "").strip()
-            handle_text_message(from_number, user_text_raw)
-            return jsonify({"status": "ok_text"}), 200
-
-        if message_type == "interactive":
-            interactive = message.get("interactive", {})
-            handle_interactive_message(from_number, interactive)
-            return jsonify({"status": "ok_interactive"}), 200
-
-        return jsonify({"status": f"ignored_{message_type}"}), 200
+        return jsonify({
+            "status": "ok",
+            "results": results
+        }), 200
 
     except Exception as e:
-        print("Error procesando mensaje:", e)
+        print("[ERROR] Error procesando webhook:", e)
         return jsonify({"status": "ok_error_handled"}), 200
 
 
@@ -644,7 +787,7 @@ if __name__ == "__main__":
     try:
         refrescar_inventario()
     except Exception as e:
-        print("No se pudo precargar inventario al iniciar:", e)
+        print("[ERROR] No se pudo precargar inventario al iniciar:", e)
 
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
