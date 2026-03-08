@@ -537,7 +537,7 @@ def responder_precio_por_id(from_number: str, vehicle_id: str):
     guardar_lead(from_number, f"id:{vehicle_id}", "consulta_precio_por_id")
 
     partes = [
-        "💰 Precio del vehículo solicitado:\n",
+        "💰ℹ️ Detalles y Precio del vehículo solicitado:\n",
         f"🚗 {marca} {modelo} {anio}",
         f"🆔 ID: {vehicle_id}",
         f"📋 Descripción:\n{descripcion}" if descripcion else "",
