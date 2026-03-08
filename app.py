@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, redirect
 import requests
 import os
 import json
@@ -15,6 +15,7 @@ WHATSAPP_TOKEN = os.getenv("WHATSAPP_TOKEN")
 PHONE_NUMBER_ID = os.getenv("PHONE_NUMBER_ID")
 
 ADMIN_PHONE = "50230306187"
+PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "").rstrip("/")
 
 SHEET_URL = "https://opensheet.elk.sh/1opEhxT7aat4GnVAEBcPqze84TSZMO3W-ji2jyHP8HZc/Sheet1"
 LEADS_WEBHOOK_URL = "https://script.google.com/macros/s/AKfycbwN7uG2ft37ALx9A736YhsBs039czPJCA40YZU1RDIcj5g7viirf3BOVznS1TsgCxoh-w/exec"
@@ -26,7 +27,7 @@ INVENTORY_CACHE_TTL = 300
 PROCESSED_MESSAGE_TTL = 600
 USER_SESSION_TTL = 1800
 SEMANTIC_DUPLICATE_TTL = 20
-WHATSAPP_TEXT_LIMIT = 3500  # margen conservador
+WHATSAPP_TEXT_LIMIT = 3500
 
 inventory_cache = {
     "data": [],
@@ -206,6 +207,7 @@ def buscar_carro_por_id(vehicle_id: str):
 
     return None
 
+
 def parse_price_value(price_text):
     if price_text is None:
         return None
@@ -214,7 +216,6 @@ def parse_price_value(price_text):
     if not text:
         return None
 
-    # Q180,000 / $23,000 / 180000
     text = text.replace("gtq", "").replace("quetzales", "").replace("q", "")
     text = text.replace("usd", "").replace("$", "")
     text = text.replace(",", "").replace(" ", "")
@@ -225,7 +226,7 @@ def parse_price_value(price_text):
 
     try:
         return float(match.group(1))
-    except:
+    except Exception:
         return None
 
 
@@ -249,17 +250,16 @@ def extraer_presupuesto(texto: str):
         if match:
             try:
                 return float(match.group(1).replace(",", ""))
-            except:
+            except Exception:
                 pass
 
-    # Si el usuario manda solo un número grande, por ejemplo: 150000
     solo_numero = re.fullmatch(r"[\d,]+(?:\.\d+)?", texto)
     if solo_numero:
         try:
             valor = float(texto.replace(",", ""))
             if valor >= 1000:
                 return valor
-        except:
+        except Exception:
             pass
 
     return None
@@ -280,18 +280,17 @@ def obtener_carros_por_presupuesto(presupuesto_max: float):
 
     return coincidencias
 
+
 def extraer_vehicle_id(texto: str):
     if not texto:
         return None
 
     texto = texto.strip()
 
-    # Exacto
     carro = buscar_carro_por_id(texto)
     if carro:
         return texto
 
-    # Patrones tipo: ID 123 / id: 123 / vehículo 123
     patrones = [
         r"\bid[:\s#-]*([a-zA-Z0-9_-]+)\b",
         r"\bvehiculo[:\s#-]*([a-zA-Z0-9_-]+)\b",
@@ -564,8 +563,21 @@ def send_vehicle_messages(to_number: str, carros: list, marca_mostrada: str):
 
 
 def build_advisor_link():
+    if PUBLIC_BASE_URL:
+        return f"{PUBLIC_BASE_URL}/go/asesor"
+
     text = quote("Hola, vengo del bot de Importadora Los Gemelos y El Fer")
     return f"https://wa.me/{ADMIN_PHONE}?text={text}"
+
+
+def build_vehicle_photos_link(vehicle_id: str, original_url: str):
+    if not original_url:
+        return ""
+
+    if PUBLIC_BASE_URL and vehicle_id:
+        return f"{PUBLIC_BASE_URL}/go/fotos/{quote(str(vehicle_id).strip())}"
+
+    return original_url
 
 
 def mostrar_vehiculos(from_number: str):
@@ -603,6 +615,7 @@ def iniciar_busqueda_marca(from_number: str):
     set_user_state(from_number, "awaiting_brand_or_id")
     send_brand_list_menu(from_number)
 
+
 def iniciar_busqueda_presupuesto(from_number: str):
     guardar_lead(from_number, "buscar_presupuesto", "buscar_presupuesto")
     set_user_state(from_number, "awaiting_budget")
@@ -614,6 +627,8 @@ def iniciar_busqueda_presupuesto(from_number: str):
         "• presupuesto 180000\n"
         "• máximo 200000"
     )
+
+
 def responder_cotizacion(from_number: str):
     guardar_lead(from_number, "orientacion_importacion", "orientacion_importacion")
 
@@ -654,8 +669,8 @@ def responder_cotizacion(from_number: str):
     )
 
     send_whatsapp_message(from_number, mensaje)
-     # botones
     send_import_interest_buttons(from_number)
+
 
 def responder_asesor(from_number: str):
     guardar_lead(from_number, "asesor", "quiere_asesor")
@@ -683,6 +698,7 @@ def responder_precio_por_id(from_number: str, vehicle_id: str):
     precio = (carro.get("precio") or "").strip()
     descripcion = (carro.get("descripcion") or "").strip()
     link_fotos = (carro.get("link_fotos") or "").strip()
+    link_fotos_corto = build_vehicle_photos_link(vehicle_id, link_fotos)
 
     guardar_lead(from_number, f"id:{vehicle_id}", "consulta_precio_por_id")
 
@@ -691,7 +707,7 @@ def responder_precio_por_id(from_number: str, vehicle_id: str):
         f"🚗 {marca} {modelo} {anio}",
         f"🆔 ID: {vehicle_id}",
         f"📋 Descripción:\n{descripcion}" if descripcion else "",
-        f"📸 Ver fotos del vehículo:\n{link_fotos}" if link_fotos else "",
+        f"📸 Ver fotos del vehículo:\n{link_fotos_corto}" if link_fotos_corto else "",
         f"💵 Precio: {precio if precio else 'No disponible en este momento'}",
         "\nEscribe *asesor* si deseas continuar con este vehículo, o *menu* para volver a ver las opciones."
     ]
@@ -881,7 +897,7 @@ def handle_interactive_message(from_number: str, interactive: dict):
             send_whatsapp_message(
                 from_number,
                 "Perfecto 👍\n\nSi en algún momento deseas explorar opciones de importación, escríbenos y con gusto te orientamos."
-    )
+            )
             return
 
         if selected_id.startswith("marca_"):
@@ -948,6 +964,26 @@ def refresh_inventory_route():
         "status": "ok",
         "items": len(data)
     }), 200
+
+
+@app.route("/go/asesor", methods=["GET"])
+def go_asesor():
+    text = quote("Hola, vengo del bot de Importadora Los Gemelos y El Fer")
+    return redirect(f"https://wa.me/{ADMIN_PHONE}?text={text}", code=302)
+
+
+@app.route("/go/fotos/<vehicle_id>", methods=["GET"])
+def go_fotos(vehicle_id):
+    carro = buscar_carro_por_id(vehicle_id)
+
+    if not carro:
+        return "Vehículo no encontrado", 404
+
+    link_fotos = (carro.get("link_fotos") or "").strip()
+    if not link_fotos:
+        return "Este vehículo no tiene link de fotos", 404
+
+    return redirect(link_fotos, code=302)
 
 
 @app.route("/webhook", methods=["GET"])
