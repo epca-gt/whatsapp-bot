@@ -5,7 +5,7 @@ import json
 import re
 import time
 import unicodedata
-from datetime import datetime
+from datetime import datetime, timedelta
 from urllib.parse import quote
 
 app = Flask(__name__)
@@ -313,7 +313,7 @@ def extraer_vehicle_id(texto: str):
 def guardar_lead(telefono: str, mensaje: str, tipo: str):
     try:
         payload = {
-            "fecha": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "fecha": (datetime.utcnow() - timedelta(hours=6)).strftime("%Y-%m-%d %H:%M:%S"),
             "telefono": telefono,
             "mensaje": mensaje,
             "tipo": tipo
