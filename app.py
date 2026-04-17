@@ -584,26 +584,29 @@ def send_vehicle_messages(to_number: str, carros: list, marca_mostrada: str):
         )
         return
 
-    mensaje = f"🚗 Vehículos disponibles de {marca_mostrada}:\n\n"
+    mensaje = f"🚗 *Vehículos disponibles de {marca_mostrada}*\n"
+    mensaje += "━━━━━━━━━━━━━━━━━━━━\n\n"
 
     for carro in carros[:VEHICLE_LIST_LIMIT]:
         carro_id = str(carro.get("id", "")).strip()
         marca    = (carro.get("marca")  or "").strip()
         modelo   = (carro.get("modelo") or "").strip()
         anio     = (carro.get("anio")   or "").strip()
+        color    = (carro.get("color")  or "").strip()
 
-        mensaje += f"• {marca} {modelo} {anio}\n"
         if carro_id:
-            mensaje += f"🆔 ID: {carro_id}\n"
-        mensaje += "\n"
+            mensaje += f"*{carro_id}.* {marca} {modelo} {anio}"
+            if color:
+                mensaje += f" · {color}"
+            mensaje += "\n"
+        else:
+            mensaje += f"• {marca} {modelo} {anio}\n"
 
     if len(carros) > VEHICLE_LIST_LIMIT:
-        mensaje += f"_(Mostrando {VEHICLE_LIST_LIMIT} de {len(carros)}. Puedes refinar con presupuesto.)_\n\n"
+        mensaje += f"\n_(Mostrando {VEHICLE_LIST_LIMIT} de {len(carros)}. Puedes refinar con presupuesto.)_\n"
 
-    mensaje += (
-        "Escribe el *ID* del vehículo para consultar información y precio, "
-        "o escribe *menu* para volver al menú principal."
-    )
+    mensaje += "\n━━━━━━━━━━━━━━━━━━━━\n"
+    mensaje += "Responde con el *número* del vehículo para ver detalles y precio."
 
     send_whatsapp_message(to_number, mensaje)
 
@@ -622,26 +625,30 @@ def mostrar_vehiculos(from_number: str):
         send_whatsapp_message(from_number, "No hay vehículos disponibles en este momento.")
         return
 
-    mensaje = "🚗 Vehículos disponibles:\n\n"
+    mensaje = "🚗 *Inventario disponible*\n"
+    mensaje += "━━━━━━━━━━━━━━━━━━━━\n\n"
 
     for carro in carros[:VEHICLE_LIST_LIMIT]:
         carro_id = str(carro.get("id", "")).strip()
         marca    = (carro.get("marca")  or "").strip()
         modelo   = (carro.get("modelo") or "").strip()
         anio     = (carro.get("anio")   or "").strip()
+        color    = (carro.get("color")  or "").strip()
 
-        mensaje += f"• {marca} {modelo} {anio}\n"
         if carro_id:
-            mensaje += f"🆔 ID: {carro_id}\n"
-        mensaje += "\n"
+            mensaje += f"*{carro_id}.* {marca} {modelo} {anio}"
+            if color:
+                mensaje += f" · {color}"
+            mensaje += "\n"
+        else:
+            mensaje += f"• {marca} {modelo} {anio}\n"
 
     if len(carros) > VEHICLE_LIST_LIMIT:
-        mensaje += f"_(Mostrando {VEHICLE_LIST_LIMIT} de {len(carros)}. Busca por marca o presupuesto para ver más.)_\n\n"
+        mensaje += f"\n_(Mostrando {VEHICLE_LIST_LIMIT} de {len(carros)}. Busca por marca o presupuesto para ver más.)_\n"
 
-    mensaje += (
-        "Puedes escribir una *marca* para filtrar resultados "
-        "o escribir el *ID* para consultar información y precio."
-    )
+    mensaje += "\n━━━━━━━━━━━━━━━━━━━━\n"
+    mensaje += "Responde con el *número* del vehículo para ver detalles y precio, "
+    mensaje += "o escribe una *marca* para filtrar."
 
     send_whatsapp_message(from_number, mensaje)
     set_user_state(from_number, "awaiting_brand_or_id")
@@ -742,7 +749,7 @@ def responder_precio_por_id(from_number: str, vehicle_id: str):
     partes = [
         "💰ℹ️ Detalles y Precio del vehículo solicitado:\n",
         f"🚗 {marca} {modelo} {anio}",
-        f"🆔 ID: {vehicle_id}",
+        f"🔢 Número: {vehicle_id}",
         f"🎨 Color: {color}" if color else "",
         f"📋 Descripción:\n{descripcion}" if descripcion else "",
         f"💵 Precio: {precio if precio else 'No disponible en este momento'}",
@@ -791,7 +798,8 @@ def manejar_presupuesto(from_number: str, presupuesto: float):
     guardar_lead(from_number, f"presupuesto:{presupuesto}", "busqueda_presupuesto")
     set_user_state(from_number, "awaiting_vehicle_id", {"last_budget": presupuesto})
 
-    mensaje = f"💰 Vehículos dentro de tu presupuesto de Q{presupuesto:,.0f}:\n\n"
+    mensaje = f"💰 *Vehículos hasta Q{presupuesto:,.0f}*\n"
+    mensaje += "━━━━━━━━━━━━━━━━━━━━\n\n"
 
     for carro in coincidencias[:VEHICLE_LIST_LIMIT]:
         carro_id = str(carro.get("id", "")).strip()
@@ -799,21 +807,23 @@ def manejar_presupuesto(from_number: str, presupuesto: float):
         modelo   = (carro.get("modelo") or "").strip()
         anio     = (carro.get("anio")   or "").strip()
         precio   = (carro.get("precio") or "").strip()
+        color    = (carro.get("color")  or "").strip()
 
-        mensaje += f"• {marca} {modelo} {anio}\n"
         if carro_id:
-            mensaje += f"🆔 ID: {carro_id}\n"
+            mensaje += f"*{carro_id}.* {marca} {modelo} {anio}"
+            if color:
+                mensaje += f" · {color}"
+            mensaje += "\n"
+        else:
+            mensaje += f"• {marca} {modelo} {anio}\n"
         if precio:
-            mensaje += f"💵 {precio}\n"
-        mensaje += "\n"
+            mensaje += f"   💵 {precio}\n"
 
     if len(coincidencias) > VEHICLE_LIST_LIMIT:
-        mensaje += f"_(Mostrando {VEHICLE_LIST_LIMIT} de {len(coincidencias)}.)_\n\n"
+        mensaje += f"\n_(Mostrando {VEHICLE_LIST_LIMIT} de {len(coincidencias)}.)_\n"
 
-    mensaje += (
-        "Escribe el *ID* del vehículo que te interese para ver detalles, "
-        "o escribe una *marca* para filtrar más."
-    )
+    mensaje += "\n━━━━━━━━━━━━━━━━━━━━\n"
+    mensaje += "Responde con el *número* del vehículo para ver detalles."
 
     send_whatsapp_message(from_number, mensaje)
 
