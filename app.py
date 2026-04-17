@@ -449,6 +449,27 @@ def send_whatsapp_link_preview(to_number: str, message_text: str):
     return send_whatsapp_payload(payload)
 
 
+def send_vehicle_action_buttons(to_number: str, vehicle_id: str):
+    payload = {
+        "messaging_product": "whatsapp",
+        "to": to_number,
+        "type": "interactive",
+        "interactive": {
+            "type": "button",
+            "body": {
+                "text": "¿Qué deseas hacer?"
+            },
+            "action": {
+                "buttons": [
+                    {"type": "reply", "reply": {"id": f"vehicle_asesor_{vehicle_id}", "title": "👨\u200d💼 Quiero este vehículo"}},
+                    {"type": "reply", "reply": {"id": "vehicle_more",                  "title": "🔙 Ver más opciones"}}
+                ]
+            }
+        }
+    }
+    send_whatsapp_payload(payload)
+
+
 def send_whatsapp_list_menu(to_number: str):
     payload = {
         "messaging_product": "whatsapp",
@@ -710,7 +731,6 @@ def responder_precio_por_id(from_number: str, vehicle_id: str):
         f"🆔 ID: {vehicle_id}",
         f"📋 Descripción:\n{descripcion}" if descripcion else "",
         f"💵 Precio: {precio if precio else 'No disponible en este momento'}",
-        "\nEscribe *asesor* si deseas continuar con este vehículo, o *menu* para volver a ver las opciones."
     ]
 
     mensaje = "\n".join([p for p in partes if p])
@@ -722,6 +742,9 @@ def responder_precio_por_id(from_number: str, vehicle_id: str):
             from_number,
             f"📸 *Ver fotos del vehículo:*\n{link_fotos}"
         )
+    # Botones de acción
+    send_vehicle_action_buttons(from_number, vehicle_id)
+
 
 
 def manejar_marca(from_number: str, marca_detectada: str):
@@ -881,6 +904,17 @@ def handle_interactive_message(from_number: str, interactive: dict):
 
     if interactive_type == "button_reply":
         selected_id = interactive.get("button_reply", {}).get("id", "")
+
+        if selected_id.startswith("vehicle_asesor_"):
+            vid = selected_id.replace("vehicle_asesor_", "")
+            guardar_lead(from_number, f"asesor_desde_vehiculo:{vid}", "asesor_desde_vehiculo")
+            responder_asesor(from_number)
+            return
+
+        if selected_id == "vehicle_more":
+            clear_user_state(from_number)
+            send_whatsapp_list_menu(from_number)
+            return
 
         if selected_id == "import_yes":
             guardar_lead(from_number, "quiere_asesor_importacion", "asesor_importacion")
