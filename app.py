@@ -57,6 +57,7 @@ inventory_cache = {
 
 _state_lock       = threading.Lock()
 processed_messages  = {}
+known_users         = set()  # números que ya han usado el bot
 recent_user_messages = {}
 user_sessions       = {}
 user_rate_limits    = {}   # {phone: [timestamp, ...]}
@@ -734,6 +735,7 @@ def responder_precio_por_id(from_number: str, vehicle_id: str):
     precio      = (carro.get("precio")      or "").strip()
     descripcion = (carro.get("descripcion") or "").strip()
     link_fotos  = (carro.get("link_fotos")  or "").strip()
+    color       = (carro.get("color")       or "").strip()
 
     guardar_lead(from_number, f"id:{vehicle_id}", "consulta_precio_por_id")
 
@@ -741,6 +743,7 @@ def responder_precio_por_id(from_number: str, vehicle_id: str):
         "💰ℹ️ Detalles y Precio del vehículo solicitado:\n",
         f"🚗 {marca} {modelo} {anio}",
         f"🆔 ID: {vehicle_id}",
+        f"🎨 Color: {color}" if color else "",
         f"📋 Descripción:\n{descripcion}" if descripcion else "",
         f"💵 Precio: {precio if precio else 'No disponible en este momento'}",
     ]
@@ -834,7 +837,18 @@ def is_semantic_duplicate(from_number: str, user_text_raw: str) -> bool:
 
 
 # ─── Handlers de mensajes ─────────────────────────────────────────────────────
+def registrar_usuario_nuevo(phone: str):
+    """Guarda un lead la primera vez que un número usa el bot."""
+    with _state_lock:
+        if phone in known_users:
+            return
+        known_users.add(phone)
+    guardar_lead(phone, "", "usuario_nuevo")
+    logger.info("Nuevo usuario registrado: %s", phone)
+
+
 def handle_text_message(from_number: str, user_text_raw: str):
+    registrar_usuario_nuevo(from_number)
     user_text  = normalize_text(user_text_raw)
     state      = get_user_state(from_number)
     presupuesto = extraer_presupuesto(user_text_raw)
