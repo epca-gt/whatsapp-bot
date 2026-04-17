@@ -436,6 +436,19 @@ def send_whatsapp_message(to_number: str, message_text: str):
     return last_response
 
 
+def send_whatsapp_link_preview(to_number: str, message_text: str):
+    payload = {
+        "messaging_product": "whatsapp",
+        "to": to_number,
+        "type": "text",
+        "text": {
+            "body": message_text,
+            "preview_url": True
+        }
+    }
+    return send_whatsapp_payload(payload)
+
+
 def send_whatsapp_list_menu(to_number: str):
     payload = {
         "messaging_product": "whatsapp",
@@ -696,13 +709,19 @@ def responder_precio_por_id(from_number: str, vehicle_id: str):
         f"🚗 {marca} {modelo} {anio}",
         f"🆔 ID: {vehicle_id}",
         f"📋 Descripción:\n{descripcion}" if descripcion else "",
-        f"📸 Ver fotos del vehículo:\n{link_fotos}" if link_fotos else "",
         f"💵 Precio: {precio if precio else 'No disponible en este momento'}",
         "\nEscribe *asesor* si deseas continuar con este vehículo, o *menu* para volver a ver las opciones."
     ]
 
     mensaje = "\n".join([p for p in partes if p])
     send_whatsapp_message(from_number, mensaje)
+
+    # Fotos en mensaje separado con preview visual
+    if link_fotos:
+        send_whatsapp_link_preview(
+            from_number,
+            f"📸 *Ver fotos del vehículo:*\n{link_fotos}"
+        )
 
 
 def manejar_marca(from_number: str, marca_detectada: str):
