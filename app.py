@@ -41,7 +41,7 @@ PROCESSED_MESSAGE_TTL = 600
 USER_SESSION_TTL      = 1800
 SEMANTIC_DUPLICATE_TTL = 20
 WHATSAPP_TEXT_LIMIT   = 3500
-VEHICLE_LIST_LIMIT    = 15    # máximo vehículos a mostrar por lista
+VEHICLE_LIST_LIMIT    = 40    # máximo vehículos a mostrar por lista
 RATE_LIMIT_MAX        = 5     # mensajes máximos por ventana
 RATE_LIMIT_WINDOW     = 60    # ventana en segundos
 
