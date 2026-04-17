@@ -85,7 +85,18 @@ def normalize_text(text: str) -> str:
     return text
 
 
-# ─── Cleanup en background (cada 2 minutos) ───────────────────────────────────
+# ─── Cleanup e inventario en background ──────────────────────────────────────
+def _inventory_refresh_loop():
+    """Refresca el inventario cada 4 minutos para que el caché nunca expire durante un request."""
+    time.sleep(30)  # esperar a que el servidor arranque bien
+    while True:
+        try:
+            refrescar_inventario()
+        except Exception as e:
+            logger.error("Error en refresh automático de inventario: %s", e)
+        time.sleep(240)  # cada 4 minutos (TTL es 5 min)
+
+
 def _cleanup_loop():
     while True:
         time.sleep(120)
@@ -119,6 +130,7 @@ def _cleanup_loop():
             logger.error("Error en cleanup: %s", e)
 
 
+threading.Thread(target=_inventory_refresh_loop, daemon=True).start()
 threading.Thread(target=_cleanup_loop, daemon=True).start()
 
 
