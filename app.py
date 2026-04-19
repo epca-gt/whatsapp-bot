@@ -509,12 +509,45 @@ def send_whatsapp_list_menu(to_number: str):
                     {
                         "title": "Menú principal",
                         "rows": [
-                            {"id": "ver_vehiculos",      "title": "Ver vehículos",         "description": "Inventario disponible"},
-                            {"id": "buscar_marca",       "title": "Buscar marca",           "description": "Toyota, Mazda, Nissan y más"},
-                            {"id": "buscar_presupuesto", "title": "Buscar por presupuesto", "description": "Ej. Q150,000"},
-                            {"id": "cotizar_importacion","title": "Cotizar importación",    "description": "Solicita una cotización"},
-                            {"id": "cotizar_cuotas",     "title": "💳 Visa Cuotas",           "description": "Calcula tus mensualidades"},
-                            {"id": "hablar_asesor",      "title": "Hablar con asesor",      "description": "Atención personalizada"}
+                            {"id": "ver_vehiculos",        "title": "Ver vehículos",           "description": "Inventario disponible"},
+                            {"id": "buscar_marca",         "title": "Buscar marca",             "description": "Toyota, Mazda, Nissan y más"},
+                            {"id": "buscar_presupuesto",   "title": "Buscar por presupuesto",   "description": "Ej. Q150,000"},
+                            {"id": "cotizar_importacion",  "title": "Cotizar importación",      "description": "Solicita una cotización"},
+                            {"id": "cotizar_cuotas",       "title": "💳 Visa Cuotas",             "description": "Calcula tus mensualidades"},
+                            {"id": "preguntas_frecuentes", "title": "❓ Preguntas frecuentes",   "description": "Dudas sobre pagos, ubicación y más"},
+                            {"id": "hablar_asesor",        "title": "Hablar con asesor",        "description": "Atención personalizada"}
+                        ]
+                    }
+                ]
+            }
+        }
+    }
+    return send_whatsapp_payload(payload)
+
+
+def send_faq_list_menu(to_number: str):
+    payload = {
+        "messaging_product": "whatsapp",
+        "to": to_number,
+        "type": "interactive",
+        "interactive": {
+            "type": "list",
+            "body": {
+                "text": "❓ *Preguntas frecuentes*\n\nSelecciona tu duda y te respondemos al instante:"
+            },
+            "footer": {"text": "Escribe *menu* para volver al menú principal"},
+            "action": {
+                "button": "Ver preguntas",
+                "sections": [
+                    {
+                        "title": "Preguntas frecuentes",
+                        "rows": [
+                            {"id": "faq_formas_de_pago",  "title": "💳 Formas de pago",        "description": "Contado, Visa Cuotas, financiamiento"},
+                            {"id": "faq_cotizar_cuotas",  "title": "🔢 Calcular mensualidades", "description": "Cotizador Visa Cuotas"},
+                            {"id": "faq_parte_de_pago",   "title": "🔄 Parte de pago",          "description": "¿Aceptan mi carro?"},
+                            {"id": "faq_ubicacion",       "title": "📍 Ubicación",              "description": "Dirección y cómo llegar"},
+                            {"id": "faq_horario",         "title": "🕐 Horario de atención",    "description": "Días y horas de atención"},
+                            {"id": "faq_importacion",     "title": "🚢 Importación por encargo","description": "¿Cómo funciona y cuánto cuesta?"},
                         ]
                     }
                 ]
@@ -1160,12 +1193,20 @@ def handle_interactive_message(from_number: str, interactive: dict):
         selected_id = interactive.get("list_reply", {}).get("id", "")
 
         route_map = {
-            "ver_vehiculos":      lambda: mostrar_vehiculos(from_number),
-            "buscar_marca":       lambda: iniciar_busqueda_marca(from_number),
-            "buscar_presupuesto": lambda: iniciar_busqueda_presupuesto(from_number),
-            "cotizar_importacion":lambda: responder_cotizacion(from_number),
-            "cotizar_cuotas":      lambda: iniciar_cotizador(from_number),
-            "hablar_asesor":      lambda: responder_asesor(from_number),
+            "ver_vehiculos":        lambda: mostrar_vehiculos(from_number),
+            "buscar_marca":         lambda: iniciar_busqueda_marca(from_number),
+            "buscar_presupuesto":   lambda: iniciar_busqueda_presupuesto(from_number),
+            "cotizar_importacion":  lambda: responder_cotizacion(from_number),
+            "cotizar_cuotas":       lambda: iniciar_cotizador(from_number),
+            "preguntas_frecuentes": lambda: send_faq_list_menu(from_number),
+            "hablar_asesor":        lambda: responder_asesor(from_number),
+            # Submenú FAQ
+            "faq_formas_de_pago":   lambda: responder_faq(from_number, "formas_de_pago"),
+            "faq_cotizar_cuotas":   lambda: iniciar_cotizador(from_number),
+            "faq_parte_de_pago":    lambda: responder_faq(from_number, "parte_de_pago"),
+            "faq_ubicacion":        lambda: responder_faq(from_number, "ubicacion"),
+            "faq_horario":          lambda: responder_faq(from_number, "horario"),
+            "faq_importacion":      lambda: responder_cotizacion(from_number),
         }
 
         if selected_id in route_map:
