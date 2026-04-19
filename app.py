@@ -483,7 +483,7 @@ def send_vehicle_action_buttons(to_number: str, vehicle_id: str):
             "action": {
                 "buttons": [
                     {"type": "reply", "reply": {"id": f"vehicle_asesor_{vehicle_id}", "title": "Hablar con asesor"}},
-                    {"type": "reply", "reply": {"id": f"vehicle_cuotas_{vehicle_id}",  "title": "💳 Cotizar Visa Cuotas"}},
+                    {"type": "reply", "reply": {"id": f"vehicle_cuotas_{vehicle_id}",  "title": "💳 Visa Cuotas"}},
                     {"type": "reply", "reply": {"id": "vehicle_more",                  "title": "Ver más opciones"}}
                 ]
             }
