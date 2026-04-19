@@ -953,17 +953,26 @@ VISA_CUOTAS = {
 def calcular_visa_cuotas(precio: float) -> str:
     msg  = "💳 *Cotización Visa Cuotas*\n"
     msg += "━━━━━━━━━━━━━━━━━━━━\n\n"
-    msg += f"💵 Precio del vehículo: *Q{precio:,.0f}*\n\n"
+    msg += f"🚗 Precio del vehículo: *Q{precio:,.0f}*\n"
+    msg += "━━━━━━━━━━━━━━━━━━━━\n\n"
 
     for cuotas, recargo in VISA_CUOTAS.items():
-        total      = precio * (1 + recargo)
-        mensual    = total / cuotas
-        nota_bac   = " _(BAC máx. 36)_" if cuotas == 36 else ""
-        no_bac     = " _(solo otros bancos)_" if cuotas == 48 else ""
-        msg += f"*{cuotas} cuotas:* Q{mensual:,.0f}/mes  _(+{int(recargo*100)}%){nota_bac}{no_bac}_\n"
+        total   = precio * (1 + recargo)
+        mensual = total / cuotas
+
+        if cuotas == 48:
+            etiqueta = "_(solo otros bancos)_"
+        elif cuotas == 36:
+            etiqueta = "_(BAC máx. 36 cuotas)_"
+        else:
+            etiqueta = ""
+
+        msg += f"🔹 *{cuotas} cuotas* — Q{mensual:,.0f}/mes\n"
+        if etiqueta:
+            msg += f"   {etiqueta}\n"
 
     msg += "\n━━━━━━━━━━━━━━━━━━━━\n"
-    msg += "_Montos aproximados. Sujeto a aprobación del banco._"
+    msg += "⚠️ _Para optar a Visa Cuotas necesitás contar con el límite disponible del total del vehículo en tu tarjeta._"
     return msg
 
 
