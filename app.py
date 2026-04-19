@@ -483,6 +483,7 @@ def send_vehicle_action_buttons(to_number: str, vehicle_id: str):
             "action": {
                 "buttons": [
                     {"type": "reply", "reply": {"id": f"vehicle_asesor_{vehicle_id}", "title": "Hablar con asesor"}},
+                    {"type": "reply", "reply": {"id": f"vehicle_cuotas_{vehicle_id}",  "title": "💳 Cotizar Visa Cuotas"}},
                     {"type": "reply", "reply": {"id": "vehicle_more",                  "title": "Ver más opciones"}}
                 ]
             }
@@ -1155,6 +1156,18 @@ def handle_interactive_message(from_number: str, interactive: dict):
             vid = selected_id.replace("vehicle_asesor_", "")
             guardar_lead(from_number, f"asesor_desde_vehiculo:{vid}", "asesor_desde_vehiculo")
             responder_asesor(from_number)
+            return
+
+        if selected_id.startswith("vehicle_cuotas_"):
+            vid   = selected_id.replace("vehicle_cuotas_", "")
+            carro = buscar_carro_por_id(vid)
+            if carro:
+                precio_val = parse_price_value(carro.get("precio", ""))
+                if precio_val:
+                    manejar_cotizador(from_number, precio_val)
+                    return
+            # Si no tiene precio, lanzar flujo manual
+            iniciar_cotizador(from_number)
             return
 
         if selected_id == "vehicle_more":
