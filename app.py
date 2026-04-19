@@ -504,7 +504,7 @@ def send_whatsapp_list_menu(to_number: str):
             },
             "footer": {"text": "Atención automatizada"},
             "action": {
-                "button": "Selecciona la opción",
+                "button": "Ver opciones",
                 "sections": [
                     {
                         "title": "Menú principal",
@@ -672,6 +672,22 @@ def send_vehicle_list_buttons(to_number: str):
         }
     }
     send_whatsapp_payload(payload)
+
+
+def _enviar_menu_principal(to_number: str):
+    """Envía el menú principal con fallback a texto si la lista falla."""
+    send_whatsapp_message(to_number, "Aqui esta el menu principal 👇")
+    result = send_whatsapp_list_menu(to_number)
+    if result is None or result.status_code != 200:
+        logger.warning("Lista del menu principal fallo para %s. Enviando fallback.", to_number)
+        send_whatsapp_message(
+            to_number,
+            "Escribe una de estas opciones:\n"
+            "• *menu* — Ver menú completo\n"
+            "• *hola* — Volver al inicio\n"
+            "• Una *marca* para buscar vehículos\n"
+            "• Tu *presupuesto* para filtrar"
+        )
 
 
 def build_advisor_link():
@@ -1287,8 +1303,7 @@ def handle_interactive_message(from_number: str, interactive: dict):
 
         if selected_id == "cotizador_menu":
             clear_user_state(from_number)
-            send_whatsapp_message(from_number, "Aqui esta el menu principal 👇")
-            send_whatsapp_list_menu(from_number)
+            _enviar_menu_principal(from_number)
             return
 
         if selected_id == "faq_back_preguntas":
@@ -1298,14 +1313,12 @@ def handle_interactive_message(from_number: str, interactive: dict):
 
         if selected_id == "faq_back_menu":
             clear_user_state(from_number)
-            send_whatsapp_message(from_number, "Aqui esta el menu principal 👇")
-            send_whatsapp_list_menu(from_number)
+            _enviar_menu_principal(from_number)
             return
 
         if selected_id == "vehicle_more":
             clear_user_state(from_number)
-            send_whatsapp_message(from_number, "Aqui esta el menu principal 👇")
-            send_whatsapp_list_menu(from_number)
+            _enviar_menu_principal(from_number)
             return
 
         if selected_id == "import_yes":
