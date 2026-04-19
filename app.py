@@ -1349,8 +1349,8 @@ def process_single_message(message: dict):
     if not from_number:
         return "ok_no_from"
 
-    # Rate limiting por usuario
-    if is_rate_limited(from_number):
+    # Rate limiting por usuario (admin excluido)
+    if from_number != ADMIN_PHONE and is_rate_limited(from_number):
         logger.warning("Rate limit alcanzado para %s", from_number)
         return "rate_limited"
 
