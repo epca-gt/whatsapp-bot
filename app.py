@@ -547,7 +547,7 @@ def send_faq_list_menu(to_number: str):
                             {"id": "faq_parte_de_pago",   "title": "🔄 Parte de pago",          "description": "¿Aceptan mi carro?"},
                             {"id": "faq_ubicacion",       "title": "📍 Ubicación",              "description": "Dirección y cómo llegar"},
                             {"id": "faq_horario",         "title": "🕐 Horario de atención",    "description": "Días y horas de atención"},
-                            {"id": "faq_importacion",     "title": "🚢 Importación por encargo","description": "¿Cómo funciona y cuánto cuesta?"},
+                            {"id": "faq_importacion",     "title": "🚢 Cotizar importación",   "description": "¿Cómo funciona y cuánto cuesta?"},
                         ]
                     }
                 ]
