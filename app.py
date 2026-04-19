@@ -652,6 +652,26 @@ def send_vehicle_messages(to_number: str, carros: list, marca_mostrada: str):
     mensaje += "Responde con el *número* del vehículo para ver detalles y precio."
 
     send_whatsapp_message(to_number, mensaje)
+    send_vehicle_list_buttons(to_number)
+
+
+def send_vehicle_list_buttons(to_number: str):
+    payload = {
+        "messaging_product": "whatsapp",
+        "to": to_number,
+        "type": "interactive",
+        "interactive": {
+            "type": "button",
+            "body": {"text": "¿Deseas hablar con un asesor?"},
+            "action": {
+                "buttons": [
+                    {"type": "reply", "reply": {"id": "hablar_asesor_lista", "title": "Hablar con asesor"}},
+                    {"type": "reply", "reply": {"id": "vehicle_more",        "title": "Ver mas opciones"}}
+                ]
+            }
+        }
+    }
+    send_whatsapp_payload(payload)
 
 
 def build_advisor_link():
@@ -874,6 +894,7 @@ def manejar_presupuesto(from_number: str, presupuesto: float):
     mensaje += "Responde con el *número* del vehículo para ver detalles."
 
     send_whatsapp_message(from_number, mensaje)
+    send_vehicle_list_buttons(from_number)
 
 
 # ─── Deduplicación semántica ──────────────────────────────────────────────────
@@ -1260,7 +1281,7 @@ def handle_interactive_message(from_number: str, interactive: dict):
             iniciar_cotizador(from_number)
             return
 
-        if selected_id == "cotizador_asesor":
+        if selected_id in ("cotizador_asesor", "hablar_asesor_lista"):
             responder_asesor(from_number)
             return
 
@@ -1275,6 +1296,7 @@ def handle_interactive_message(from_number: str, interactive: dict):
 
         if selected_id == "faq_back_menu":
             clear_user_state(from_number)
+            send_whatsapp_message(from_number, "Aqui esta el menu principal 👇")
             send_whatsapp_list_menu(from_number)
             return
 
