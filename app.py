@@ -62,6 +62,14 @@ recent_user_messages = {}
 user_sessions       = {}
 user_rate_limits    = {}   # {phone: [timestamp, ...]}
 
+# ─── Estadísticas en memoria ──────────────────────────────────────────────────
+stats = {
+    "consultas_hoy":     0,
+    "vehiculos_vistos":  {},   # {vehicle_id: count}
+    "asesores_hoy":      [],   # [phone, ...]
+    "fecha":             None
+}
+
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
 def now_ts():
@@ -504,6 +512,7 @@ def send_whatsapp_list_menu(to_number: str):
                             {"id": "buscar_marca",       "title": "Buscar marca",           "description": "Toyota, Mazda, Nissan y más"},
                             {"id": "buscar_presupuesto", "title": "Buscar por presupuesto", "description": "Ej. Q150,000"},
                             {"id": "cotizar_importacion","title": "Cotizar importación",    "description": "Solicita una cotización"},
+                            {"id": "cotizar_cuotas",     "title": "💳 Visa Cuotas",           "description": "Calcula tus mensualidades"},
                             {"id": "hablar_asesor",      "title": "Hablar con asesor",      "description": "Atención personalizada"}
                         ]
                     }
@@ -718,6 +727,7 @@ def responder_cotizacion(from_number: str):
 
 def responder_asesor(from_number: str):
     guardar_lead(from_number, "asesor", "quiere_asesor")
+    registrar_asesor_solicitado(from_number)
     clear_user_state(from_number)
     send_whatsapp_message(
         from_number,
@@ -745,6 +755,7 @@ def responder_precio_por_id(from_number: str, vehicle_id: str):
     color       = (carro.get("color")       or "").strip()
 
     guardar_lead(from_number, f"id:{vehicle_id}", "consulta_precio_por_id")
+    registrar_vehiculo_visto(vehicle_id)
 
     partes = [
         "💰ℹ️ Detalles y Precio del vehículo solicitado:\n",
@@ -860,8 +871,180 @@ def registrar_usuario_nuevo(phone: str):
     logger.info("Nuevo usuario registrado: %s", phone)
 
 
+# ─── Stats helpers ───────────────────────────────────────────────────────────
+def reset_stats_if_new_day():
+    today = datetime.now(GUATEMALA_TZ).strftime("%Y-%m-%d")
+    with _state_lock:
+        if stats["fecha"] != today:
+            stats["consultas_hoy"]    = 0
+            stats["vehiculos_vistos"] = {}
+            stats["asesores_hoy"]     = []
+            stats["fecha"]            = today
+
+
+def registrar_consulta(phone: str):
+    reset_stats_if_new_day()
+    with _state_lock:
+        stats["consultas_hoy"] += 1
+
+
+def registrar_vehiculo_visto(vehicle_id: str):
+    reset_stats_if_new_day()
+    with _state_lock:
+        stats["vehiculos_vistos"][vehicle_id] = stats["vehiculos_vistos"].get(vehicle_id, 0) + 1
+
+
+def registrar_asesor_solicitado(phone: str):
+    reset_stats_if_new_day()
+    with _state_lock:
+        if phone not in stats["asesores_hoy"]:
+            stats["asesores_hoy"].append(phone)
+
+
+def responder_adminstats(from_number: str):
+    reset_stats_if_new_day()
+    with _state_lock:
+        consultas    = stats["consultas_hoy"]
+        vehiculos    = dict(sorted(stats["vehiculos_vistos"].items(), key=lambda x: x[1], reverse=True))
+        asesores     = list(stats["asesores_hoy"])
+        fecha        = stats["fecha"]
+
+    msg = f"📊 *Estadísticas del día {fecha}*\n"
+    msg += "━━━━━━━━━━━━━━━━━━━━\n\n"
+    msg += f"👥 Consultas totales: *{consultas}*\n\n"
+
+    if vehiculos:
+        msg += "🚗 *Vehículos más consultados:*\n"
+        for vid, count in list(vehiculos.items())[:5]:
+            carro = buscar_carro_por_id(vid)
+            if carro:
+                nombre = f"{carro.get('marca','')} {carro.get('modelo','')} {carro.get('anio','')}".strip()
+            else:
+                nombre = f"ID {vid}"
+            msg += f"  • {nombre}: {count} vez{'es' if count > 1 else ''}\n"
+    else:
+        msg += "🚗 Sin consultas de vehículos aún.\n"
+
+    msg += "\n"
+
+    if asesores:
+        msg += f"📞 *Números que pidieron asesor ({len(asesores)}):*\n"
+        for phone in asesores:
+            msg += f"  • +{phone}\n"
+    else:
+        msg += "📞 Nadie ha pedido asesor hoy.\n"
+
+    send_whatsapp_message(from_number, msg)
+
+
+# ─── Cotizador Visa Cuotas ────────────────────────────────────────────────────
+VISA_CUOTAS = {
+    3:  0.10,
+    6:  0.10,
+    9:  0.11,
+    12: 0.12,
+    18: 0.18,
+    24: 0.24,
+    36: 0.27,
+    48: 0.36,
+}
+
+def calcular_visa_cuotas(precio: float) -> str:
+    msg  = "💳 *Cotización Visa Cuotas*\n"
+    msg += "━━━━━━━━━━━━━━━━━━━━\n\n"
+    msg += f"💵 Precio del vehículo: *Q{precio:,.0f}*\n\n"
+
+    for cuotas, recargo in VISA_CUOTAS.items():
+        total      = precio * (1 + recargo)
+        mensual    = total / cuotas
+        nota_bac   = " _(BAC máx. 36)_" if cuotas == 36 else ""
+        no_bac     = " _(solo otros bancos)_" if cuotas == 48 else ""
+        msg += f"*{cuotas} cuotas:* Q{mensual:,.0f}/mes  _(+{int(recargo*100)}%){nota_bac}{no_bac}_\n"
+
+    msg += "\n━━━━━━━━━━━━━━━━━━━━\n"
+    msg += "_Montos aproximados. Sujeto a aprobación del banco._"
+    return msg
+
+
+def manejar_cotizador(from_number: str, precio: float):
+    guardar_lead(from_number, f"cotizador:{precio}", "cotizador_visa_cuotas")
+    send_whatsapp_message(from_number, calcular_visa_cuotas(precio))
+    set_user_state(from_number, "")
+
+
+def iniciar_cotizador(from_number: str):
+    guardar_lead(from_number, "cotizador", "inicio_cotizador")
+    set_user_state(from_number, "awaiting_cotizador_price")
+    send_whatsapp_message(
+        from_number,
+        "💳 *Cotizador Visa Cuotas*\n\n"
+        "Ingresa el precio del vehículo en Quetzales:\n\n"
+        "Ejemplo: *85000* o *Q85,000*"
+    )
+
+
+# ─── FAQ automático ───────────────────────────────────────────────────────────
+FAQ_RESPONSES = {
+    "parte_de_pago": (
+        ["parte de pago", "carro en parte", "cambio", "mi carro", "reciben carros", "acepta carro"],
+        "✅ *¿Aceptamos carros en parte de pago?*\n\n"
+        "Sí, aceptamos vehículos como parte de pago. "
+        "El valor del tu carro se evalúa al momento de la visita.\n\n"
+        "Escribe *asesor* para coordinarlo directamente con nosotros."
+    ),
+    "formas_de_pago": (
+        ["como pago", "forma de pago", "formas de pago", "metodo de pago", "financiamiento", "prestamo", "banco", "credito"],
+        "💳 *Formas de pago disponibles:*\n\n"
+        "✅ *Contado* — pago completo al momento\n"
+        "✅ *Visa Cuotas* — hasta 48 cuotas con tu tarjeta Visa\n"
+        "   (BAC máximo 36 cuotas)\n\n"
+        "❌ No manejamos financiamiento propio\n"
+        "❌ No tramitamos préstamos bancarios\n\n"
+        "Escribe *cuotas* para calcular mensualidades."
+    ),
+    "ubicacion": (
+        ["donde estan", "ubicacion", "direccion", "como llegar", "donde quedan", "mapa", "location"],
+        "📍 *Nuestra ubicación:*\n\n"
+        "*Autoventas Los Gemelos y Fer*\n"
+        "35 Avenida 16-33 Zona 7, Villa Linda 2\n\n"
+        "🗺️ Google Maps:\nhttps://maps.app.goo.gl/bwxHxvZmnS1ftYin8\n\n"
+        "🕐 *Horario:* Lunes a Sábado\n8:00 AM – 6:00 PM"
+    ),
+    "horario": (
+        ["horario", "que hora", "cuando abren", "estan abiertos", "dias", "domingos", "sabados", "lunes"],
+        "🕐 *Horario de atención:*\n\n"
+        "📅 Lunes a Sábado\n"
+        "⏰ 8:00 AM – 6:00 PM\n\n"
+        "Los domingos no atendemos. Si escribís fuera de horario, un asesor te responderá el siguiente día hábil."
+    ),
+    "cuotas_keyword": (
+        ["cuotas", "visa cuotas", "mensualidad", "mensualidades", "visacuotas", "a cuotas"],
+        None  # Special case — launch cotizador
+    ),
+}
+
+def detectar_faq(user_text: str):
+    """Retorna la clave del FAQ si se detecta alguna keyword, o None."""
+    for key, (keywords, _) in FAQ_RESPONSES.items():
+        for kw in keywords:
+            if kw in user_text:
+                return key
+    return None
+
+
+def responder_faq(from_number: str, faq_key: str):
+    _, response = FAQ_RESPONSES[faq_key]
+    if response is None:
+        # Caso especial: cotizador
+        iniciar_cotizador(from_number)
+        return
+    guardar_lead(from_number, faq_key, "faq")
+    send_whatsapp_message(from_number, response)
+
+
 def handle_text_message(from_number: str, user_text_raw: str):
     registrar_usuario_nuevo(from_number)
+    registrar_consulta(from_number)
     user_text  = normalize_text(user_text_raw)
     state      = get_user_state(from_number)
     presupuesto = extraer_presupuesto(user_text_raw)
@@ -871,6 +1054,11 @@ def handle_text_message(from_number: str, user_text_raw: str):
         "buenas noches", "menu", "menú", "inicio", "start"
     }
 
+    # Comando secreto admin
+    if user_text == "adminstats" and from_number == ADMIN_PHONE:
+        responder_adminstats(from_number)
+        return
+
     if user_text in saludos:
         guardar_lead(from_number, user_text, "saludo")
         clear_user_state(from_number)
@@ -879,6 +1067,18 @@ def handle_text_message(from_number: str, user_text_raw: str):
 
     if user_text in {"asesor", "hablar con asesor"}:
         responder_asesor(from_number)
+        return
+
+    # Cotizador: esperando precio
+    if state == "awaiting_cotizador_price":
+        precio = extraer_presupuesto(user_text_raw)
+        if precio:
+            manejar_cotizador(from_number, precio)
+            return
+        send_whatsapp_message(
+            from_number,
+            "No entendí el precio. Ingresa solo el número, por ejemplo: *85000*"
+        )
         return
 
     if state == "awaiting_budget" and presupuesto:
@@ -900,6 +1100,12 @@ def handle_text_message(from_number: str, user_text_raw: str):
         manejar_marca(from_number, marca_detectada)
         return
 
+    # FAQ automático
+    faq_key = detectar_faq(user_text)
+    if faq_key:
+        responder_faq(from_number, faq_key)
+        return
+
     if state == "awaiting_import_quote":
         guardar_lead(from_number, user_text_raw, "detalle_cotizacion")
         clear_user_state(from_number)
@@ -912,7 +1118,7 @@ def handle_text_message(from_number: str, user_text_raw: str):
     send_whatsapp_message(
         from_number,
         "No entendí tu mensaje.\n\n"
-        "Escribe *menu* para ver las opciones disponibles o envía una *marca* o un *ID* de vehículo."
+        "Escribe *menu* para ver las opciones disponibles o envía una *marca* o un *número* de vehículo."
     )
 
 
@@ -927,6 +1133,7 @@ def handle_interactive_message(from_number: str, interactive: dict):
             "buscar_marca":       lambda: iniciar_busqueda_marca(from_number),
             "buscar_presupuesto": lambda: iniciar_busqueda_presupuesto(from_number),
             "cotizar_importacion":lambda: responder_cotizacion(from_number),
+            "cotizar_cuotas":      lambda: iniciar_cotizador(from_number),
             "hablar_asesor":      lambda: responder_asesor(from_number),
         }
 
