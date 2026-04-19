@@ -954,7 +954,8 @@ def calcular_visa_cuotas(precio: float) -> str:
     msg  = "💳 *Cotización Visa Cuotas*\n"
     msg += "━━━━━━━━━━━━━━━━━━━━\n\n"
     msg += f"🚗 Precio del vehículo: *Q{precio:,.0f}*\n"
-    msg += "━━━━━━━━━━━━━━━━━━━━\n\n"
+    msg += "━━━━━━━━━━━━━━━━━━━━\n"
+    msg += "_Los montos mensuales ya incluyen el recargo por cuotas._\n\n"
 
     for cuotas, recargo in VISA_CUOTAS.items():
         total   = precio * (1 + recargo)
@@ -967,7 +968,7 @@ def calcular_visa_cuotas(precio: float) -> str:
         else:
             etiqueta = ""
 
-        msg += f"🔹 *{cuotas} cuotas* — Q{mensual:,.0f}/mes\n"
+        msg += f"🔹 *{cuotas} cuotas* — Q{mensual:,.0f}/mes  _(+{int(recargo*100)}%)_\n"
         if etiqueta:
             msg += f"   {etiqueta}\n"
 
@@ -976,10 +977,30 @@ def calcular_visa_cuotas(precio: float) -> str:
     return msg
 
 
+def send_cotizador_action_buttons(to_number: str):
+    payload = {
+        "messaging_product": "whatsapp",
+        "to": to_number,
+        "type": "interactive",
+        "interactive": {
+            "type": "button",
+            "body": {"text": "¿Qué deseas hacer?"},
+            "action": {
+                "buttons": [
+                    {"type": "reply", "reply": {"id": "cotizador_asesor", "title": "Hablar con asesor"}},
+                    {"type": "reply", "reply": {"id": "cotizador_menu",   "title": "Ver más opciones"}}
+                ]
+            }
+        }
+    }
+    send_whatsapp_payload(payload)
+
+
 def manejar_cotizador(from_number: str, precio: float):
     guardar_lead(from_number, f"cotizador:{precio}", "cotizador_visa_cuotas")
     send_whatsapp_message(from_number, calcular_visa_cuotas(precio))
     set_user_state(from_number, "")
+    send_cotizador_action_buttons(from_number)
 
 
 def iniciar_cotizador(from_number: str):
@@ -1177,6 +1198,15 @@ def handle_interactive_message(from_number: str, interactive: dict):
                     return
             # Si no tiene precio, lanzar flujo manual
             iniciar_cotizador(from_number)
+            return
+
+        if selected_id == "cotizador_asesor":
+            responder_asesor(from_number)
+            return
+
+        if selected_id == "cotizador_menu":
+            clear_user_state(from_number)
+            send_whatsapp_list_menu(from_number)
             return
 
         if selected_id == "vehicle_more":
