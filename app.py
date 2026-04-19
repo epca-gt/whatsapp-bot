@@ -1287,10 +1287,12 @@ def handle_interactive_message(from_number: str, interactive: dict):
 
         if selected_id == "cotizador_menu":
             clear_user_state(from_number)
+            send_whatsapp_message(from_number, "Aqui esta el menu principal 👇")
             send_whatsapp_list_menu(from_number)
             return
 
         if selected_id == "faq_back_preguntas":
+            send_whatsapp_message(from_number, "Aqui estan las preguntas frecuentes 👇")
             send_faq_list_menu(from_number)
             return
 
@@ -1302,6 +1304,7 @@ def handle_interactive_message(from_number: str, interactive: dict):
 
         if selected_id == "vehicle_more":
             clear_user_state(from_number)
+            send_whatsapp_message(from_number, "Aqui esta el menu principal 👇")
             send_whatsapp_list_menu(from_number)
             return
 
