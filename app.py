@@ -1096,14 +1096,33 @@ def detectar_faq(user_text: str):
     return None
 
 
+def send_faq_back_buttons(to_number: str):
+    payload = {
+        "messaging_product": "whatsapp",
+        "to": to_number,
+        "type": "interactive",
+        "interactive": {
+            "type": "button",
+            "body": {"text": "¿Qué deseas hacer ahora?"},
+            "action": {
+                "buttons": [
+                    {"type": "reply", "reply": {"id": "faq_back_preguntas", "title": "❓ Más preguntas"}},
+                    {"type": "reply", "reply": {"id": "faq_back_menu",      "title": "🏠 Menú principal"}}
+                ]
+            }
+        }
+    }
+    send_whatsapp_payload(payload)
+
+
 def responder_faq(from_number: str, faq_key: str):
     _, response = FAQ_RESPONSES[faq_key]
     if response is None:
-        # Caso especial: cotizador
         iniciar_cotizador(from_number)
         return
     guardar_lead(from_number, faq_key, "faq")
     send_whatsapp_message(from_number, response)
+    send_faq_back_buttons(from_number)
 
 
 def handle_text_message(from_number: str, user_text_raw: str):
@@ -1246,6 +1265,15 @@ def handle_interactive_message(from_number: str, interactive: dict):
             return
 
         if selected_id == "cotizador_menu":
+            clear_user_state(from_number)
+            send_whatsapp_list_menu(from_number)
+            return
+
+        if selected_id == "faq_back_preguntas":
+            send_faq_list_menu(from_number)
+            return
+
+        if selected_id == "faq_back_menu":
             clear_user_state(from_number)
             send_whatsapp_list_menu(from_number)
             return
