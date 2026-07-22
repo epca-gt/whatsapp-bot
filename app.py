@@ -198,9 +198,10 @@ def limpiar_markdown_whatsapp(texto: str) -> str:
 
 def url_imagen_directa(url: str) -> str:
     """
-    Convierte links de Google Drive a formato de descarga directa.
-    WhatsApp necesita una URL que devuelva la imagen cruda; un link de
-    carpeta o de vista previa NO funciona.
+    Convierte links de Google Drive al CDN de imágenes (lh3.googleusercontent.com),
+    que entrega el archivo crudo. WhatsApp necesita una URL que devuelva la imagen
+    directa: un link de carpeta o de vista previa NO funciona.
+    El archivo debe estar en 'Cualquier persona con el enlace' y ser JPG o PNG.
     """
     if not url:
         return ""
@@ -208,14 +209,17 @@ def url_imagen_directa(url: str) -> str:
     if not url.startswith("http"):
         return ""
 
+    # https://drive.google.com/file/d/FILE_ID/view
     m = re.search(r"drive\.google\.com/file/d/([A-Za-z0-9_-]+)", url)
     if m:
-        return f"https://drive.google.com/uc?export=download&id={m.group(1)}"
+        return f"https://lh3.googleusercontent.com/d/{m.group(1)}"
 
-    m = re.search(r"drive\.google\.com/open\?id=([A-Za-z0-9_-]+)", url)
+    # https://drive.google.com/open?id=FILE_ID  |  /uc?export=download&id=FILE_ID
+    m = re.search(r"drive\.google\.com/(?:open|uc)\?(?:[^&]*&)*id=([A-Za-z0-9_-]+)", url)
     if m:
-        return f"https://drive.google.com/uc?export=download&id={m.group(1)}"
+        return f"https://lh3.googleusercontent.com/d/{m.group(1)}"
 
+    # Los links de carpeta no sirven como imagen
     if "drive.google.com/drive/folders" in url:
         return ""
 
@@ -596,7 +600,7 @@ def ejecutar_tool_visa_cuotas(id_vehiculo=None, monto=None, cuotas=None,
             return {"error": "El monto a tarjeta debe ser mayor a cero."}, []
         if contado + tarjeta > base + 0.01:
             return {"error": "El contado más el monto a tarjeta superan el precio del vehículo."}, []
-        # Lo que no va ni a tarjeta ni al contado declarado, se asume contado
+        # Lo que no va a la tarjeta se cubre al contado
         contado = base - tarjeta
     else:
         tarjeta = base - contado
@@ -1031,13 +1035,16 @@ def debug_inventario():
         "con_foto_valida": len(con_foto),
         "estados_encontrados": sorted({str(c.get("estado") or "(vacio)") for c in validos}),
         "llaves_detectadas": list(data[0].keys()) if data else [],
-        "ejemplo_foto": url_imagen_directa(con_foto[0].get("foto_principal")) if con_foto else None,
+        "fotos_convertidas": [
+            {"id": c.get("id"), "url": url_imagen_directa(c.get("foto_principal"))}
+            for c in con_foto[:5]
+        ],
         "muestra": data[:2]
     }), 200
 
 @app.route("/debug-cuotas", methods=["GET"])
 def debug_cuotas():
-    """Prueba rápida: /debug-cuotas?id=1&contado=20000&cuotas=12"""
+    """Prueba rápida: /debug-cuotas?id=1&contado=20000&cuotas=24"""
     resultado, _ = ejecutar_tool_visa_cuotas(
         id_vehiculo=request.args.get("id"),
         monto=request.args.get("monto", type=float),
