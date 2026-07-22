@@ -44,7 +44,7 @@ openai_client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
 REQUEST_TIMEOUT       = 15
 INVENTORY_CACHE_TTL   = 300
 PROCESSED_MESSAGE_TTL = 600
-USER_SESSION_TTL      = 3600  # Aumentado a 1 hora para memoria del agente
+USER_SESSION_TTL      = 3600  # 1 hora para memoria del agente
 SEMANTIC_DUPLICATE_TTL = 20
 RATE_LIMIT_MAX        = 10    
 RATE_LIMIT_WINDOW     = 60    
@@ -94,20 +94,18 @@ def normalize_text(text: str) -> str:
     return text
 
 def parse_price_value(price_text):
+    """Extrae únicamente los números y el punto decimal, ignorando Q, comas, etc."""
     if price_text is None:
         return None
     text = str(price_text).strip().lower()
     if not text:
         return None
-    text = (text
-            .replace("gtq", "").replace("quetzales", "").replace("q", "")
-            .replace("usd", "").replace("$", "")
-            .replace(",", "").replace(" ", ""))
-    match = re.search(r"(\d+(?:\.\d+)?)", text)
-    if not match:
-        return None
+    
+    # Eliminar todo lo que no sea dígito o punto decimal (elimina la 'q', comas, espacios)
+    text = re.sub(r'[^\d.]', '', text.replace(',', ''))
+    
     try:
-        return float(match.group(1))
+        return float(text)
     except (ValueError, TypeError):
         return None
 
@@ -155,7 +153,6 @@ def _cleanup_loop():
                     for k in expired:
                         d.pop(k, None)
 
-                # Limpiar sesiones antiguas de AI
                 expired_histories = [
                     p for p, data in user_chat_histories.items()
                     if current - data.get("updated_at", 0) > USER_SESSION_TTL
@@ -192,7 +189,7 @@ def refrescar_inventario():
 def obtener_inventario():
     with _inventory_lock:
         if not inventory_cache["data"]:
-            pass # Si está vacío, intentará en background, usamos lo que haya
+            pass 
         return list(inventory_cache["data"])
 
 def buscar_carro_por_id(vehicle_id: str):
@@ -213,8 +210,8 @@ INVENTORY_TOOLS = [
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "marca": {"type": "string", "description": "Marca del auto, ej: Toyota, Mazda"},
-                    "modelo": {"type": "string", "description": "Modelo del auto, ej: Civic, RAV4"},
+                    "marca": {"type": "string", "description": "Marca del auto, ej: Nissan, Chevrolet, Toyota"},
+                    "modelo": {"type": "string", "description": "Modelo del auto, ej: 350z, Corvette"},
                     "precio_max": {"type": "number", "description": "Presupuesto máximo en Quetzales"},
                     "anio": {"type": "integer", "description": "Año específico del vehículo"}
                 },
@@ -229,7 +226,13 @@ def ejecutar_tool_inventario(marca=None, modelo=None, precio_max=None, anio=None
     resultados = []
 
     for c in carros:
-        if marca and normalize_text(marca) not in normalize_text(c.get("marca", "")):
+        # FILTRO 1: Ignorar filas donde la "marca" esté vacía (elimina filas basura/fantasmas)
+        marca_auto = str(c.get("marca") or "").strip()
+        if not marca_auto:
+            continue
+            
+        # FILTRO 2: Coincidencias de búsqueda
+        if marca and normalize_text(marca) not in normalize_text(marca_auto):
             continue
         if modelo and normalize_text(modelo) not in normalize_text(c.get("modelo", "")):
             continue
@@ -250,7 +253,7 @@ def ejecutar_tool_inventario(marca=None, modelo=None, precio_max=None, anio=None
             "link_fotos": c.get("link_fotos", "Sin link disponible")
         })
 
-    # Limitamos a 15 para no exceder los tokens del modelo
+    # Limitamos a 15 para no exceder tokens
     return resultados[:15]
 
 # ─── Agente AI Principal ──────────────────────────────────────────────────────
@@ -280,7 +283,6 @@ def procesar_mensaje_con_agente(from_number: str, user_text_raw: str) -> str:
     append_to_history(from_number, "user", user_text_raw)
 
     try:
-        # Llamada inicial al LLM
         response = openai_client.chat.completions.create(
             model="gpt-4o",
             messages=messages,
@@ -291,7 +293,6 @@ def procesar_mensaje_con_agente(from_number: str, user_text_raw: str) -> str:
 
         response_message = response.choices[0].message
 
-        # Validar si el LLM decidió usar una herramienta
         if response_message.tool_calls:
             messages.append(response_message)
             
@@ -313,7 +314,6 @@ def procesar_mensaje_con_agente(from_number: str, user_text_raw: str) -> str:
                         "content": json.dumps(res_inventario, ensure_ascii=False)
                     })
 
-            # Segunda llamada para redactar la respuesta con los datos
             segunda_respuesta = openai_client.chat.completions.create(
                 model="gpt-4o",
                 messages=messages,
@@ -375,30 +375,21 @@ def build_advisor_link():
 def handle_text_message(from_number: str, user_text_raw: str):
     user_text = normalize_text(user_text_raw)
     
-    # Comando de Administración
     if user_text == "adminstats" and from_number == ADMIN_PHONE:
         msg = f"📊 *Estadísticas de Hoy*\nConsultas Totales: {stats['consultas_hoy']}\n(Módulo AI Activo)"
         send_whatsapp_message(from_number, msg)
         return
 
-    # Registrar estadísticas y leads
     with _state_lock:
         stats["consultas_hoy"] += 1
         if from_number not in known_users:
             known_users.add(from_number)
             guardar_lead(from_number, "Usuario Nuevo", "usuario_nuevo")
 
-    # Procesar todo el lenguaje natural con OpenAI
     respuesta_agente = procesar_mensaje_con_agente(from_number, user_text_raw)
-    
-    # Enviar la respuesta construida por la AI al usuario
     send_whatsapp_message(from_number, respuesta_agente)
 
 def handle_interactive_message(from_number: str, interactive: dict):
-    """
-    Si el usuario presiona un botón de un mensaje antiguo, 
-    le pasamos el título del botón a la IA como si lo hubiera escrito.
-    """
     interactive_type = interactive.get("type")
     user_text = ""
     
@@ -408,9 +399,7 @@ def handle_interactive_message(from_number: str, interactive: dict):
         user_text = interactive.get("button_reply", {}).get("title", "")
 
     if user_text:
-        # Enviar el texto del botón al agente
         handle_text_message(from_number, f"El usuario seleccionó la opción: {user_text}")
-
 
 def process_single_message(message: dict):
     from_number  = message.get("from")
