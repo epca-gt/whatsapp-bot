@@ -63,6 +63,14 @@ FOTOS_SI_COINCIDENCIAS_MENOR_A = 4
 FILTRAR_POR_ESTADO     = True
 ESTADOS_NO_DISPONIBLES = ("vendido", "apartado", "reservado", "entregado", "no disponible")
 
+# ─── Ubicación del negocio ─────────────────────────────────────────────────────
+NEGOCIO_NOMBRE     = "Importadora Los Gemelos y Fer"
+NEGOCIO_DIRECCION  = "35 Avenida 16-33 Zona 7, Villa Linda 2, Ciudad de Guatemala"
+NEGOCIO_LAT        = 14.6432439
+NEGOCIO_LNG        = -90.5547868
+NEGOCIO_MAPS_URL   = f"https://www.google.com/maps/search/?api=1&query={NEGOCIO_LAT},{NEGOCIO_LNG}"
+NEGOCIO_WAZE_URL   = f"https://waze.com/ul?ll={NEGOCIO_LAT}%2C{NEGOCIO_LNG}&navigate=yes"
+
 # ─── Visa Cuotas ──────────────────────────────────────────────────────────────
 # Recargo sobre el monto que se pasa por Visa Cuotas (no sobre el pago al contado).
 VISA_CUOTAS_RECARGO = {
@@ -185,7 +193,8 @@ def construir_caption_foto(carro: dict) -> str:
     Arma el caption de WhatsApp con los datos reales del Sheet.
     La foto (marco/branding) se sube UNA sola vez por carro; el texto se
     actualiza solo en cada consulta, así que un cambio de precio no
-    requiere tocar la imagen.
+    requiere tocar la imagen. Esta info NO debe repetirse en el mensaje
+    de texto que acompaña al detalle.
     """
     partes = [
         f"*{carro.get('marca','')} {carro.get('modelo','')}* ({carro.get('anio','')})",
@@ -489,6 +498,18 @@ INVENTORY_TOOLS = [
                 "required": []
             }
         }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "enviar_ubicacion",
+            "description": (
+                "Envía la ubicación del negocio (mapa nativo de WhatsApp + links de Waze y Google "
+                "Maps). Usar SIEMPRE que el cliente pregunte dónde están ubicados, cómo llegar, "
+                "la dirección, o pida el Waze/Maps del local."
+            ),
+            "parameters": {"type": "object", "properties": {}, "required": []}
+        }
     }
 ]
 
@@ -586,7 +607,12 @@ def ejecutar_tool_detalle(id=None, descripcion_vehiculo=None):
         "combustible": carro.get("combustible") or "No especificado",
         "color":       carro.get("color") or "No especificado",
         "equipamiento": formatear_descripcion(carro.get("descripcion")),
-        "link_fotos":  carro.get("link_fotos") or ""
+        "link_fotos":  carro.get("link_fotos") or "",
+        "nota": (
+            "IMPORTANTE: la foto que se envía junto con esta respuesta ya muestra precio, motor, "
+            "transmisión, millaje y color en su caption. NO repitas esos datos en tu texto: enfocate "
+            "solo en el equipamiento (lista de abajo) y en invitar a agendar una cita."
+        )
     }, fotos
 
 def ejecutar_tool_visa_cuotas(id_vehiculo=None, monto=None, cuotas=None,
@@ -672,6 +698,20 @@ def ejecutar_tool_visa_cuotas(id_vehiculo=None, monto=None, cuotas=None,
                 base, contado, tarjeta, cuotas)
     return resultado, []
 
+def ejecutar_tool_ubicacion():
+    logger.info("TOOL ubicacion -> enviada")
+    return {
+        "nombre": NEGOCIO_NOMBRE,
+        "direccion": NEGOCIO_DIRECCION,
+        "google_maps": NEGOCIO_MAPS_URL,
+        "waze": NEGOCIO_WAZE_URL,
+        "nota": (
+            "El pin de ubicación ya se envió como mensaje nativo de WhatsApp. "
+            "Solo mencioná brevemente la dirección y horarios; no repitas los links, "
+            "ya se muestran en el mapa."
+        )
+    }, []
+
 def despachar_tool(nombre: str, args: dict):
     """Devuelve (resultado_json, fotos_a_enviar)."""
     if nombre == "consultar_inventario":
@@ -695,6 +735,8 @@ def despachar_tool(nombre: str, args: dict):
             pago_contado=args.get("pago_contado"),
             monto_a_tarjeta=args.get("monto_a_tarjeta")
         )
+    if nombre == "enviar_ubicacion":
+        return ejecutar_tool_ubicacion()
     return {"error": f"Herramienta desconocida: {nombre}"}, []
 
 # ─── System Prompt ────────────────────────────────────────────────────────────
@@ -721,6 +763,9 @@ SYSTEM_PROMPT_TEXT = (
     "por la tarjeta', mandá X en 'monto_a_tarjeta'. El recargo solo aplica a la parte de tarjeta, "
     "así que conviene mencionarle que entre más pague al contado, menos recargo paga.\n"
 
+    "4c. Usá 'enviar_ubicacion' cuando pregunten dónde están, cómo llegar, la dirección, o pidan "
+    "el Waze/Maps del local.\n"
+
     "5. NUNCA inventes autos, precios, millaje ni características. Todo dato viene de una "
     "herramienta. Si un campo dice 'No especificado', decí que lo confirmás con un asesor.\n"
 
@@ -739,16 +784,18 @@ SYSTEM_PROMPT_TEXT = (
     "URL_DEL_LINK\n\n"
     "No pongas equipamiento en los listados. Si hay más resultados, decí cuántos faltan.\n"
 
-    "10. Al dar DETALLE: encabezado *Marca Modelo (Año)* con precio, luego motor, transmisión, "
-    "millaje, combustible y color en líneas cortas, después máximo 10 puntos de equipamiento "
-    "con guiones. Si hay más, ofrecé mandar el resto.\n"
+    "10. Al dar DETALLE: la foto que se envía ya trae precio, motor, transmisión, millaje y color "
+    "en el caption — NO los repitas en el texto. En el texto poné solo un encabezado corto "
+    "*Marca Modelo (Año)*, luego máximo 10 puntos de equipamiento con guiones, y el link de fotos "
+    "adicionales si existe. Si hay más equipamiento, ofrecé mandar el resto. Cerrá invitando a "
+    "agendar una cita.\n"
 
     "11. Al dar CUOTAS: mostrá máximo 4 plazos por mensaje con el pago mensual de cada uno. "
     "Aclará el recargo de ese plazo y que el monto es referencial y sujeto a aprobación del banco. "
     "Nunca prometas aprobación. Si hay más plazos disponibles, mencionalos sin desglosarlos.\n"
 
-    "12. Si el sistema envió fotos, no digas 'no puedo mandar fotos'. Las imágenes ya se "
-    "mandaron aparte.\n"
+    "12. Si el sistema envió fotos o ubicación, no digas 'no puedo mandar fotos/ubicación'. "
+    "Ya se mandaron aparte como mensajes nativos.\n"
 
     "13. Ubicación: 35 Avenida 16-33 Zona 7, Villa Linda 2. "
     "Horarios: Lunes a Sábado 8:00 AM – 6:00 PM.\n"
@@ -761,7 +808,7 @@ SYSTEM_PROMPT_TEXT = (
 # ─── Agente AI ────────────────────────────────────────────────────────────────
 def procesar_mensaje_con_agente(from_number: str, user_text_raw: str) -> dict:
     if not openai_client:
-        return {"texto": "Servicio temporalmente en mantenimiento.", "fotos": []}
+        return {"texto": "Servicio temporalmente en mantenimiento.", "fotos": [], "enviar_ubicacion": False}
 
     historial = get_history(from_number)
     messages = ([{"role": "system", "content": SYSTEM_PROMPT_TEXT}]
@@ -770,6 +817,7 @@ def procesar_mensaje_con_agente(from_number: str, user_text_raw: str) -> dict:
     append_to_history(from_number, "user", user_text_raw)
 
     fotos_pendientes = []
+    ubicacion_pedida = False
 
     try:
         response = openai_client.chat.completions.create(
@@ -790,6 +838,9 @@ def procesar_mensaje_con_agente(from_number: str, user_text_raw: str) -> dict:
                     args = json.loads(tool_call.function.arguments or "{}")
                 except Exception:
                     args = {}
+
+                if nombre == "enviar_ubicacion":
+                    ubicacion_pedida = True
 
                 resultado, fotos = despachar_tool(nombre, args)
                 fotos_pendientes.extend(fotos)
@@ -819,13 +870,18 @@ def procesar_mensaje_con_agente(from_number: str, user_text_raw: str) -> dict:
                 vistas.add(f["url"])
                 fotos_unicas.append(f)
 
-        return {"texto": texto_final, "fotos": fotos_unicas[:MAX_FOTOS_POR_RESPUESTA]}
+        return {
+            "texto": texto_final,
+            "fotos": fotos_unicas[:MAX_FOTOS_POR_RESPUESTA],
+            "enviar_ubicacion": ubicacion_pedida
+        }
 
     except Exception as e:
         logger.error("Error en OpenAI: %s", e)
         return {
             "texto": "Disculpa, estoy procesando mucha información. ¿Puedes repetir tu pregunta en unos segundos?",
-            "fotos": []
+            "fotos": [],
+            "enviar_ubicacion": False
         }
 
 # ─── Leads y Mensajería WhatsApp ──────────────────────────────────────────────
@@ -934,6 +990,24 @@ def send_whatsapp_image(to_number: str, image_url: str, caption: str = ""):
         logger.error("Falló envío de imagen: %s", image_url)
     return res
 
+def send_whatsapp_location(to_number: str):
+    """Manda el pin nativo de WhatsApp con mapa embebido."""
+    payload = {
+        "messaging_product": "whatsapp",
+        "to": to_number,
+        "type": "location",
+        "location": {
+            "latitude": NEGOCIO_LAT,
+            "longitude": NEGOCIO_LNG,
+            "name": NEGOCIO_NOMBRE,
+            "address": NEGOCIO_DIRECCION
+        }
+    }
+    res = send_whatsapp_payload(payload)
+    if res is not None and res.status_code >= 400:
+        logger.error("Falló envío de ubicación nativa")
+    return res
+
 def build_advisor_link():
     return f"https://wa.me/{ADMIN_PHONE}?text={quote('Hola, vengo del bot')}"
 
@@ -978,11 +1052,17 @@ def handle_text_message(from_number: str, user_text_raw: str):
         guardar_lead(from_number, "Usuario Nuevo", "usuario_nuevo")
 
     resultado = procesar_mensaje_con_agente(from_number, user_text_raw)
-    send_whatsapp_message(from_number, resultado["texto"])
 
+    # Orden: primero lo visual (foto/ubicación), después el texto que las complementa.
     for foto in resultado.get("fotos", []):
         send_whatsapp_image(from_number, foto["url"], foto.get("caption", ""))
         time.sleep(0.4)
+
+    if resultado.get("enviar_ubicacion"):
+        send_whatsapp_location(from_number)
+        time.sleep(0.4)
+
+    send_whatsapp_message(from_number, resultado["texto"])
 
 def handle_interactive_message(from_number: str, interactive: dict):
     tipo = interactive.get("type")
@@ -1072,6 +1152,11 @@ def debug_cuotas():
         pago_contado=request.args.get("contado", type=float),
         monto_a_tarjeta=request.args.get("tarjeta", type=float)
     )
+    return jsonify(resultado), 200
+
+@app.route("/debug-ubicacion", methods=["GET"])
+def debug_ubicacion():
+    resultado, _ = ejecutar_tool_ubicacion()
     return jsonify(resultado), 200
 
 @app.route("/webhook", methods=["GET"])
