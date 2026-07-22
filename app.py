@@ -37,54 +37,67 @@ OPENAI_API_KEY    = os.getenv("OPENAI_API_KEY")
 WHATSAPP_API_URL  = f"https://graph.facebook.com/v20.0/{PHONE_NUMBER_ID}/messages"
 GUATEMALA_TZ      = ZoneInfo("America/Guatemala")
 
-# Inicializar cliente OpenAI
 openai_client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
 if not OPENAI_API_KEY:
     logger.error("OPENAI_API_KEY NO configurada. El agente no podrá responder.")
 
 # ─── Constantes ───────────────────────────────────────────────────────────────
-REQUEST_TIMEOUT       = 15
-INVENTORY_CACHE_TTL   = 300
-PROCESSED_MESSAGE_TTL = 600
-USER_SESSION_TTL      = 3600  # 1 hora para memoria del agente
+REQUEST_TIMEOUT        = 15
+INVENTORY_CACHE_TTL    = 300
+PROCESSED_MESSAGE_TTL  = 600
+USER_SESSION_TTL       = 3600
 SEMANTIC_DUPLICATE_TTL = 20
-RATE_LIMIT_MAX        = 10
-RATE_LIMIT_WINDOW     = 60
 
-MAX_RESULTADOS_LISTA  = 12   # tope de vehículos que se mandan al modelo al listar
-MAX_ITEMS_RESUMEN     = 6    # cuántas viñetas de 'descripcion' van en el listado
+RATE_LIMIT_MAX         = 10    # mensajes permitidos...
+RATE_LIMIT_WINDOW      = 60    # ...por esta ventana en segundos
+RATE_LIMIT_AVISO_TTL   = 300   # no repetir el aviso antes de 5 min
 
-# La columna 'estado' del Sheet marca disponibilidad (Disponible / Vendido / etc.)
+WHATSAPP_MAX_LEN       = 3900  # margen bajo el límite real de 4096
+WHATSAPP_CAPTION_MAX   = 1000  # límite de caption en imágenes (real: 1024)
+
+MAX_RESULTADOS_LISTA   = 12
+MAX_ITEMS_RESUMEN      = 6
+MAX_FOTOS_POR_RESPUESTA = 3
+FOTOS_SI_COINCIDENCIAS_MENOR_A = 4
+
 FILTRAR_POR_ESTADO     = True
 ESTADOS_NO_DISPONIBLES = ("vendido", "apartado", "reservado", "entregado", "no disponible")
 
+# ─── Visa Cuotas ──────────────────────────────────────────────────────────────
+# Recargo sobre el monto que se pasa por Visa Cuotas (no sobre el pago al contado).
+VISA_CUOTAS_RECARGO = {
+    3:  0.10,
+    6:  0.10,
+    9:  0.11,
+    12: 0.12,
+    18: 0.18,
+    24: 0.24,
+    36: 0.27,
+    48: 0.36,
+}
+VISA_CUOTAS_PLANES = sorted(VISA_CUOTAS_RECARGO.keys())
+VISA_PLANES_SUGERIDOS = [12, 24, 36, 48]  # los que se muestran si no piden plazo
+
 # ─── Estado en memoria ────────────────────────────────────────────────────────
 _inventory_lock = threading.Lock()
-inventory_cache = {
-    "data": [],
-    "timestamp": 0,
-    "last_success": 0
-}
+inventory_cache = {"data": [], "timestamp": 0, "last_success": 0}
 
-_state_lock       = threading.Lock()
-processed_messages  = {}
-known_users         = set()
+_state_lock          = threading.Lock()
+processed_messages   = {}
+known_users          = set()
 recent_user_messages = {}
-user_sessions       = {}
-user_chat_histories = {}  # Memoria del Agente AI
-user_rate_limits    = {}
+user_chat_histories  = {}
+user_rate_limits     = {}
+rate_limit_avisados  = {}
 
-# ─── Estadísticas en memoria ──────────────────────────────────────────────────
-stats = {
-    "consultas_hoy":     0,
-    "vehiculos_vistos":  {},
-    "asesores_hoy":      [],
-    "fecha":             None
-}
+stats = {"consultas_hoy": 0, "vehiculos_vistos": {}, "asesores_hoy": [], "fecha": None}
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
 def now_ts():
     return time.time()
+
+def hoy_str():
+    return datetime.now(GUATEMALA_TZ).strftime("%Y-%m-%d")
 
 def strip_accents(text: str) -> str:
     if not text:
@@ -99,42 +112,41 @@ def normalize_text(text: str) -> str:
         return ""
     text = strip_accents(text)
     text = text.strip().lower()
-    text = re.sub(r"\s+", " ", text)
-    return text
+    return re.sub(r"\s+", " ", text)
 
 def parse_price_value(price_text):
-    """Extrae únicamente los números y el punto decimal, ignorando Q, comas, etc."""
     if price_text is None:
         return None
     text = str(price_text).strip().lower()
     if not text:
         return None
-
     text = re.sub(r'[^\d.]', '', text.replace(',', ''))
-
     try:
         return float(text)
     except (ValueError, TypeError):
         return None
 
+def formato_quetzales(valor: float) -> str:
+    return f"Q{valor:,.2f}"
+
 def _normalize_row(row: dict) -> dict:
-    """Convierte llaves a minúsculas sin acentos: 'Precio Q' -> 'precio_q'."""
     out = {}
     for k, v in row.items():
         key = normalize_text(str(k)).replace(" ", "_")
         out[key] = v.strip() if isinstance(v, str) else v
 
     alias = {
-        "precio":      ["precio_q", "precio_quetzales", "valor", "precio_venta"],
-        "anio":        ["ano", "year", "modelo_anio"],
-        "link_fotos":  ["fotos", "link", "enlace", "url_fotos", "galeria"],
-        "marca":       ["brand"],
-        "modelo":      ["model", "linea"],
-        "id":          ["codigo", "no", "num", "id_vehiculo"],
-        "millaje":     ["kilometraje", "km", "millas", "mileage"],
-        "transmision": ["caja", "transmission"],
-        "combustible": ["gasolina", "fuel", "tipo_combustible"],
-        "descripcion": ["detalles", "equipamiento", "extras", "notas"],
+        "precio":          ["precio_q", "precio_quetzales", "valor", "precio_venta"],
+        "anio":            ["ano", "year", "modelo_anio"],
+        "link_fotos":      ["fotos", "link", "enlace", "url_fotos", "galeria"],
+        "foto_principal":  ["foto", "imagen", "foto_url", "img", "imagen_principal"],
+        "marca":           ["brand"],
+        "modelo":          ["model", "linea"],
+        "id":              ["codigo", "no", "num", "id_vehiculo"],
+        "millaje":         ["kilometraje", "km", "millas", "mileage"],
+        "transmision":     ["caja", "transmission"],
+        "combustible":     ["gasolina", "fuel", "tipo_combustible"],
+        "descripcion":     ["detalles", "equipamiento", "extras", "notas"],
     }
     for destino, posibles in alias.items():
         if not out.get(destino):
@@ -145,11 +157,11 @@ def _normalize_row(row: dict) -> dict:
     return out
 
 def _limpiar_vinieta(linea: str) -> str:
-    """Quita emojis/bullets del inicio de cada línea de la descripción."""
-    return re.sub(r"^[\s\-•*\u2000-\u3300\U0001F000-\U0001FAFF\u2600-\u27BF\uFE0F]+", "", linea).strip()
+    return re.sub(
+        r"^[\s\-•*\u2000-\u3300\U0001F000-\U0001FAFF\u2600-\u27BF\uFE0F]+", "", linea
+    ).strip()
 
 def resumir_descripcion(desc, max_items: int = MAX_ITEMS_RESUMEN) -> str:
-    """Convierte la descripción larga en una línea corta para el listado."""
     if not desc:
         return ""
     lineas = [_limpiar_vinieta(l) for l in str(desc).split("\n")]
@@ -163,7 +175,6 @@ def resumir_descripcion(desc, max_items: int = MAX_ITEMS_RESUMEN) -> str:
     return resumen
 
 def formatear_descripcion(desc) -> list:
-    """Devuelve la descripción completa como lista limpia de características."""
     if not desc:
         return []
     lineas = [_limpiar_vinieta(l) for l in str(desc).split("\n")]
@@ -174,11 +185,10 @@ def esta_disponible(carro: dict) -> bool:
         return True
     estado = normalize_text(str(carro.get("estado") or ""))
     if not estado:
-        return True  # sin dato = asumimos disponible
+        return True
     return estado not in ESTADOS_NO_DISPONIBLES
 
 def limpiar_markdown_whatsapp(texto: str) -> str:
-    """Red de seguridad: convierte Markdown al formato que sí renderiza WhatsApp."""
     if not texto:
         return texto
     texto = re.sub(r"\[([^\]]+)\]\((https?://[^\)]+)\)", r"\1: \2", texto)
@@ -186,24 +196,64 @@ def limpiar_markdown_whatsapp(texto: str) -> str:
     texto = re.sub(r"^#{1,6}\s*(.+)$", r"*\1*", texto, flags=re.MULTILINE)
     return texto.strip()
 
-# ─── Memoria Conversacional del Agente ────────────────────────────────────────
+def url_imagen_directa(url: str) -> str:
+    """
+    Convierte links de Google Drive a formato de descarga directa.
+    WhatsApp necesita una URL que devuelva la imagen cruda; un link de
+    carpeta o de vista previa NO funciona.
+    """
+    if not url:
+        return ""
+    url = str(url).strip()
+    if not url.startswith("http"):
+        return ""
+
+    m = re.search(r"drive\.google\.com/file/d/([A-Za-z0-9_-]+)", url)
+    if m:
+        return f"https://drive.google.com/uc?export=download&id={m.group(1)}"
+
+    m = re.search(r"drive\.google\.com/open\?id=([A-Za-z0-9_-]+)", url)
+    if m:
+        return f"https://drive.google.com/uc?export=download&id={m.group(1)}"
+
+    if "drive.google.com/drive/folders" in url:
+        return ""
+
+    return url
+
+# ─── Rate limiting ────────────────────────────────────────────────────────────
+def rate_limit_excedido(phone: str) -> bool:
+    ahora = now_ts()
+    with _state_lock:
+        marcas = [t for t in user_rate_limits.get(phone, []) if ahora - t < RATE_LIMIT_WINDOW]
+        if len(marcas) >= RATE_LIMIT_MAX:
+            user_rate_limits[phone] = marcas
+            return True
+        marcas.append(ahora)
+        user_rate_limits[phone] = marcas
+        return False
+
+def debe_avisar_rate_limit(phone: str) -> bool:
+    ahora = now_ts()
+    with _state_lock:
+        if ahora - rate_limit_avisados.get(phone, 0) < RATE_LIMIT_AVISO_TTL:
+            return False
+        rate_limit_avisados[phone] = ahora
+        return True
+
+# ─── Memoria Conversacional ───────────────────────────────────────────────────
 def append_to_history(phone: str, role: str, content: str):
     with _state_lock:
         if phone not in user_chat_histories:
-            user_chat_histories[phone] = {
-                "messages": [],
-                "updated_at": now_ts()
-            }
+            user_chat_histories[phone] = {"messages": [], "updated_at": now_ts()}
         user_chat_histories[phone]["messages"].append({"role": role, "content": content})
         user_chat_histories[phone]["updated_at"] = now_ts()
-
         if len(user_chat_histories[phone]["messages"]) > 10:
             user_chat_histories[phone]["messages"] = user_chat_histories[phone]["messages"][-10:]
 
 def get_history(phone: str):
     with _state_lock:
-        history = user_chat_histories.get(phone, {}).get("messages", [])
-        return list(history)
+        return list(user_chat_histories.get(phone, {}).get("messages", []))
 
 # ─── Inventario (Google Sheets) ───────────────────────────────────────────────
 def refrescar_inventario():
@@ -251,22 +301,18 @@ def obtener_inventario():
     with _inventory_lock:
         data = list(inventory_cache["data"])
         edad = now_ts() - inventory_cache["timestamp"]
-
     if not data or edad > INVENTORY_CACHE_TTL:
         data = refrescar_inventario()
-
     return list(data)
 
 def buscar_carro_por_id(vehicle_id: str):
-    carros = obtener_inventario()
     objetivo = normalize_text(str(vehicle_id))
-    for carro in carros:
+    for carro in obtener_inventario():
         if normalize_text(str(carro.get("id", ""))) == objetivo:
             return carro
     return None
 
 def buscar_carro_por_texto(texto: str):
-    """Fallback: encuentra un carro por 'Nissan 350z' si no dieron el ID."""
     carros = obtener_inventario()
     consulta = normalize_text(texto)
     if not consulta:
@@ -279,7 +325,6 @@ def buscar_carro_por_texto(texto: str):
             continue
         if consulta in etiqueta or etiqueta in consulta:
             return carro
-    # Coincidencia parcial por palabras
     palabras = [p for p in consulta.split() if len(p) > 2]
     for carro in carros:
         etiqueta = normalize_text(f"{carro.get('marca','')} {carro.get('modelo','')}")
@@ -287,7 +332,7 @@ def buscar_carro_por_texto(texto: str):
             return carro
     return None
 
-# ─── Cleanup e inventario en background ──────────────────────────────────────
+# ─── Loops en background ──────────────────────────────────────────────────────
 def _inventory_refresh_loop():
     time.sleep(10)
     while True:
@@ -306,16 +351,17 @@ def _cleanup_loop():
                 for d, ttl in [
                     (processed_messages,   PROCESSED_MESSAGE_TTL),
                     (recent_user_messages, SEMANTIC_DUPLICATE_TTL),
+                    (rate_limit_avisados,  RATE_LIMIT_AVISO_TTL),
                 ]:
-                    expired = [k for k, ts in d.items() if current - ts > ttl]
-                    for k in expired:
+                    for k in [k for k, ts in d.items() if current - ts > ttl]:
                         d.pop(k, None)
 
-                expired_histories = [
-                    p for p, data in user_chat_histories.items()
-                    if current - data.get("updated_at", 0) > USER_SESSION_TTL
-                ]
-                for p in expired_histories:
+                for p in [p for p, v in user_rate_limits.items()
+                          if not v or current - max(v) > RATE_LIMIT_WINDOW * 2]:
+                    user_rate_limits.pop(p, None)
+
+                for p in [p for p, data in user_chat_histories.items()
+                          if current - data.get("updated_at", 0) > USER_SESSION_TTL]:
                     user_chat_histories.pop(p, None)
 
             logger.info("Cleanup ejecutado. Sesiones AI activas: %d", len(user_chat_histories))
@@ -325,7 +371,7 @@ def _cleanup_loop():
 threading.Thread(target=_inventory_refresh_loop, daemon=True).start()
 threading.Thread(target=_cleanup_loop, daemon=True).start()
 
-# ─── Tools (Herramientas para el Agente) ──────────────────────────────────────
+# ─── Tools ────────────────────────────────────────────────────────────────────
 INVENTORY_TOOLS = [
     {
         "type": "function",
@@ -333,39 +379,23 @@ INVENTORY_TOOLS = [
             "name": "consultar_inventario",
             "description": (
                 "Lista vehículos disponibles según filtros (marca, modelo, rango de precio, año). "
-                "Devuelve datos resumidos de cada auto. Usar para búsquedas y comparaciones. "
-                "Si el cliente pide TODOS los detalles o el equipamiento de un auto puntual, "
-                "usar 'detalle_vehiculo' en lugar de esta."
+                "Devuelve datos resumidos. Para el equipamiento completo de un auto puntual "
+                "usar 'detalle_vehiculo'."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "marca": {
-                        "type": "string",
-                        "description": "Marca del auto, ej: Nissan, Chevrolet, Toyota"
-                    },
-                    "modelo": {
-                        "type": "string",
-                        "description": "Modelo del auto, ej: 350z, Corvette"
-                    },
+                    "marca": {"type": "string", "description": "Marca del auto, ej: Nissan, Toyota"},
+                    "modelo": {"type": "string", "description": "Modelo del auto, ej: 350z, Corvette"},
                     "precio_max": {
                         "type": "number",
-                        "description": (
-                            "Precio MÁXIMO en Quetzales. Usar cuando el cliente dice "
-                            "'hasta', 'menos de', 'máximo', 'no más de', 'presupuesto de'"
-                        )
+                        "description": "Precio MÁXIMO en Quetzales. Para 'hasta', 'menos de', 'máximo', 'presupuesto de'"
                     },
                     "precio_min": {
                         "type": "number",
-                        "description": (
-                            "Precio MÍNIMO en Quetzales. Usar cuando el cliente dice "
-                            "'más de', 'arriba de', 'mayor a', 'desde', 'superior a'"
-                        )
+                        "description": "Precio MÍNIMO en Quetzales. Para 'más de', 'arriba de', 'mayor a', 'desde'"
                     },
-                    "anio": {
-                        "type": "integer",
-                        "description": "Año específico del vehículo"
-                    }
+                    "anio": {"type": "integer", "description": "Año específico del vehículo"}
                 },
                 "required": []
             }
@@ -376,23 +406,59 @@ INVENTORY_TOOLS = [
         "function": {
             "name": "detalle_vehiculo",
             "description": (
-                "Devuelve la ficha COMPLETA de un vehículo: motor, transmisión, millaje, "
-                "combustible, color, estado y la lista completa de equipamiento y extras. "
-                "Usar siempre que el cliente pregunte por características, equipamiento, "
-                "millaje, motor o 'qué trae' un auto específico."
+                "Ficha COMPLETA de un vehículo: motor, transmisión, millaje, combustible, color, "
+                "estado y todo el equipamiento. Usar cuando pregunten qué trae un auto específico."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "id": {
-                        "type": "string",
-                        "description": "ID exacto del vehículo según el inventario, ej: 1"
-                    },
+                    "id": {"type": "string", "description": "ID exacto del vehículo, ej: 1"},
                     "descripcion_vehiculo": {
                         "type": "string",
+                        "description": "Si no se conoce el ID: marca y modelo, ej: 'Nissan 350z'"
+                    }
+                },
+                "required": []
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "calcular_visa_cuotas",
+            "description": (
+                "Calcula el pago mensual con Visa Cuotas. Usar SIEMPRE que pregunten por cuotas, "
+                "mensualidades, financiamiento o pagos mixtos (parte al contado y parte con tarjeta). "
+                "Nunca calcules cuotas ni recargos de cabeza: esta herramienta ya aplica el recargo "
+                "correcto solo sobre la porción que va a la tarjeta."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "id_vehiculo": {
+                        "type": "string",
+                        "description": "ID del vehículo del inventario. Preferí esto sobre 'monto'."
+                    },
+                    "monto": {
+                        "type": "number",
+                        "description": "Precio total en Quetzales, solo si el cliente da una cifra propia sin referir a un auto del inventario"
+                    },
+                    "cuotas": {
+                        "type": "integer",
+                        "description": f"Plazo en meses. Planes válidos: {VISA_CUOTAS_PLANES}. Si el cliente no dice plazo, omitir este campo."
+                    },
+                    "pago_contado": {
+                        "type": "number",
                         "description": (
-                            "Alternativa si no se conoce el ID: marca y modelo tal como los "
-                            "mencionó el cliente, ej: 'Nissan 350z' o 'Mazda 6 Touring'"
+                            "Monto en Quetzales que el cliente paga en efectivo, prima o enganche. "
+                            "Este monto NO lleva recargo. Ej: si dice 'doy Q20,000 de prima y el resto a cuotas', acá va 20000."
+                        )
+                    },
+                    "monto_a_tarjeta": {
+                        "type": "number",
+                        "description": (
+                            "Monto exacto que el cliente quiere pasar por la tarjeta, si lo especifica. "
+                            "Ej: 'quiero pasar solo Q30,000 por Visa'. Si se omite, se financia todo el resto tras el pago al contado."
                         )
                     }
                 },
@@ -404,29 +470,25 @@ INVENTORY_TOOLS = [
 
 def ejecutar_tool_inventario(marca=None, modelo=None, precio_max=None, anio=None, precio_min=None):
     carros = obtener_inventario()
-    resultados = []
+    resultados, fotos = [], []
 
     for c in carros:
         marca_auto = str(c.get("marca") or "").strip()
-        if not marca_auto:
+        if not marca_auto or not esta_disponible(c):
             continue
-        if not esta_disponible(c):
-            continue
-
         if marca and normalize_text(marca) not in normalize_text(marca_auto):
             continue
         if modelo and normalize_text(modelo) not in normalize_text(str(c.get("modelo") or "")):
             continue
         if anio and str(c.get("anio") or "").strip() != str(anio):
             continue
-
         if precio_max or precio_min:
-            val_precio = parse_price_value(c.get("precio"))
-            if val_precio is None:
+            val = parse_price_value(c.get("precio"))
+            if val is None:
                 continue
-            if precio_max and val_precio > precio_max:
+            if precio_max and val > precio_max:
                 continue
-            if precio_min and val_precio < precio_min:
+            if precio_min and val < precio_min:
                 continue
 
         resultados.append({
@@ -443,18 +505,24 @@ def ejecutar_tool_inventario(marca=None, modelo=None, precio_max=None, anio=None
             "extras_resumen": resumir_descripcion(c.get("descripcion")),
             "link_fotos":  c.get("link_fotos") or ""
         })
+        fotos.append({
+            "url": url_imagen_directa(c.get("foto_principal")),
+            "caption": f"*{marca_auto} {c.get('modelo','')}* ({c.get('anio','')}) - {c.get('precio','')}"
+        })
 
-    logger.info(
-        "TOOL lista -> total=%d filtrado=%d (marca=%s modelo=%s min=%s max=%s anio=%s)",
-        len(carros), len(resultados), marca, modelo, precio_min, precio_max, anio
-    )
+    logger.info("TOOL lista -> total=%d filtrado=%d (marca=%s modelo=%s min=%s max=%s anio=%s)",
+                len(carros), len(resultados), marca, modelo, precio_min, precio_max, anio)
+
+    fotos_validas = []
+    if 0 < len(resultados) < FOTOS_SI_COINCIDENCIAS_MENOR_A:
+        fotos_validas = [f for f in fotos if f["url"]][:MAX_FOTOS_POR_RESPUESTA]
 
     return {
         "total_inventario": len(carros),
         "coincidencias": len(resultados),
-        "nota": "Los extras vienen resumidos. Para la ficha completa usá detalle_vehiculo con el id.",
+        "nota": "Extras resumidos. Para la ficha completa usá detalle_vehiculo con el id.",
         "vehiculos": resultados[:MAX_RESULTADOS_LISTA]
-    }
+    }, fotos_validas
 
 def ejecutar_tool_detalle(id=None, descripcion_vehiculo=None):
     carro = None
@@ -465,14 +533,20 @@ def ejecutar_tool_detalle(id=None, descripcion_vehiculo=None):
 
     if not carro:
         logger.info("TOOL detalle -> NO encontrado (id=%s texto=%s)", id, descripcion_vehiculo)
-        return {
-            "encontrado": False,
-            "mensaje": "No se encontró ese vehículo en el inventario."
-        }
+        return {"encontrado": False, "mensaje": "No se encontró ese vehículo en el inventario."}, []
 
     disponible = esta_disponible(carro)
     logger.info("TOOL detalle -> id=%s %s %s disponible=%s",
                 carro.get("id"), carro.get("marca"), carro.get("modelo"), disponible)
+
+    foto_url = url_imagen_directa(carro.get("foto_principal"))
+    fotos = []
+    if foto_url:
+        fotos.append({
+            "url": foto_url,
+            "caption": (f"*{carro.get('marca','')} {carro.get('modelo','')}* "
+                        f"({carro.get('anio','')}) - {carro.get('precio','')}")
+        })
 
     return {
         "encontrado": True,
@@ -490,9 +564,93 @@ def ejecutar_tool_detalle(id=None, descripcion_vehiculo=None):
         "color":       carro.get("color") or "No especificado",
         "equipamiento": formatear_descripcion(carro.get("descripcion")),
         "link_fotos":  carro.get("link_fotos") or ""
+    }, fotos
+
+def ejecutar_tool_visa_cuotas(id_vehiculo=None, monto=None, cuotas=None,
+                              pago_contado=None, monto_a_tarjeta=None):
+    referencia, base = None, None
+
+    if id_vehiculo:
+        carro = buscar_carro_por_id(id_vehiculo)
+        if not carro:
+            return {"error": f"No existe el vehículo con id {id_vehiculo}."}, []
+        base = parse_price_value(carro.get("precio"))
+        referencia = f"{carro.get('marca','')} {carro.get('modelo','')} ({carro.get('anio','')})"
+        if base is None:
+            return {"error": "Ese vehículo no tiene precio registrado."}, []
+
+    if base is None and monto:
+        base = float(monto)
+
+    if base is None:
+        return {"error": "Falta el vehículo o el monto para calcular."}, []
+
+    contado = max(float(pago_contado or 0), 0)
+    if contado > base:
+        return {"error": "El pago al contado no puede ser mayor que el precio."}, []
+
+    # Cuánto se pasa efectivamente por la tarjeta
+    if monto_a_tarjeta:
+        tarjeta = float(monto_a_tarjeta)
+        if tarjeta <= 0:
+            return {"error": "El monto a tarjeta debe ser mayor a cero."}, []
+        if contado + tarjeta > base + 0.01:
+            return {"error": "El contado más el monto a tarjeta superan el precio del vehículo."}, []
+        # Lo que no va ni a tarjeta ni al contado declarado, se asume contado
+        contado = base - tarjeta
+    else:
+        tarjeta = base - contado
+
+    if tarjeta <= 0:
+        return {
+            "vehiculo": referencia,
+            "precio": formato_quetzales(base),
+            "mensaje": "Con ese pago al contado se cubre el vehículo completo. No se necesita financiamiento."
+        }, []
+
+    def calcular(n):
+        recargo_pct = VISA_CUOTAS_RECARGO.get(n)
+        if recargo_pct is None:
+            return None
+        total_tarjeta = tarjeta * (1 + recargo_pct)
+        return {
+            "cuotas": n,
+            "recargo_pct": f"{int(recargo_pct * 100)}%",
+            "recargo_monto": formato_quetzales(total_tarjeta - tarjeta),
+            "total_en_tarjeta": formato_quetzales(total_tarjeta),
+            "pago_mensual": formato_quetzales(total_tarjeta / n),
+            "total_a_pagar": formato_quetzales(contado + total_tarjeta)
+        }
+
+    resultado = {
+        "vehiculo": referencia,
+        "precio_vehiculo": formato_quetzales(base),
+        "pago_contado": formato_quetzales(contado),
+        "monto_por_tarjeta": formato_quetzales(tarjeta),
+        "nota_recargo": "El recargo aplica ÚNICAMENTE sobre el monto que pasa por la tarjeta.",
+        "aviso": "Montos referenciales. La aprobación y el cupo dependen del banco emisor."
     }
 
+    if cuotas:
+        plan = calcular(int(cuotas))
+        if not plan:
+            resultado["error_plan"] = (
+                f"No manejamos plan a {cuotas} cuotas. Planes disponibles: {VISA_CUOTAS_PLANES}"
+            )
+            resultado["planes"] = [calcular(n) for n in VISA_PLANES_SUGERIDOS]
+        else:
+            resultado["plan_solicitado"] = plan
+    else:
+        resultado["planes"] = [calcular(n) for n in VISA_PLANES_SUGERIDOS]
+        resultado["otros_plazos_disponibles"] = [n for n in VISA_CUOTAS_PLANES
+                                                 if n not in VISA_PLANES_SUGERIDOS]
+
+    logger.info("TOOL visa_cuotas -> base=%s contado=%s tarjeta=%s cuotas=%s",
+                base, contado, tarjeta, cuotas)
+    return resultado, []
+
 def despachar_tool(nombre: str, args: dict):
+    """Devuelve (resultado_json, fotos_a_enviar)."""
     if nombre == "consultar_inventario":
         return ejecutar_tool_inventario(
             marca=args.get("marca"),
@@ -506,13 +664,20 @@ def despachar_tool(nombre: str, args: dict):
             id=args.get("id"),
             descripcion_vehiculo=args.get("descripcion_vehiculo")
         )
-    return {"error": f"Herramienta desconocida: {nombre}"}
+    if nombre == "calcular_visa_cuotas":
+        return ejecutar_tool_visa_cuotas(
+            id_vehiculo=args.get("id_vehiculo"),
+            monto=args.get("monto"),
+            cuotas=args.get("cuotas"),
+            pago_contado=args.get("pago_contado"),
+            monto_a_tarjeta=args.get("monto_a_tarjeta")
+        )
+    return {"error": f"Herramienta desconocida: {nombre}"}, []
 
-# ─── Agente AI Principal ──────────────────────────────────────────────────────
+# ─── System Prompt ────────────────────────────────────────────────────────────
 SYSTEM_PROMPT_TEXT = (
     "Eres el asesor virtual inteligente de Importadora Los Gemelos y Fer en Guatemala. "
-    "Tu objetivo es ayudar a los clientes a encontrar vehículos en nuestro inventario, "
-    "resolver dudas y agendar citas.\n\n"
+    "Tu objetivo es ayudar a los clientes a encontrar vehículos, resolver dudas y agendar citas.\n\n"
 
     "REGLAS OBLIGATORIAS:\n"
 
@@ -521,53 +686,67 @@ SYSTEM_PROMPT_TEXT = (
     "2. Usá 'consultar_inventario' para buscar o listar autos (marcas, modelos, precios, "
     "presupuesto, disponibilidad general).\n"
 
-    "3. Usá 'detalle_vehiculo' cuando el cliente pregunte por UN auto específico: "
-    "equipamiento, qué trae, motor, millaje, transmisión, color o cualquier detalle técnico. "
-    "Pasá el id si lo conocés; si no, pasá marca y modelo en 'descripcion_vehiculo'.\n"
+    "3. Usá 'detalle_vehiculo' cuando pregunten por UN auto específico: equipamiento, qué trae, "
+    "motor, millaje, transmisión o color. Pasá el id si lo conocés; si no, marca y modelo en "
+    "'descripcion_vehiculo'.\n"
 
-    "4. NUNCA inventes autos, precios, millaje ni características. Todo dato debe venir de "
-    "una herramienta. Si un campo dice 'No especificado', decí que lo confirmás con un asesor.\n"
+    "4. Usá 'calcular_visa_cuotas' para TODA pregunta de cuotas, mensualidades, financiamiento o "
+    "pagos mixtos. Jamás calcules montos, recargos ni divisiones de cabeza.\n"
 
-    "5. Si 'coincidencias' es 0, decí claramente que no hay ese vehículo disponible y ofrecé "
-    "alternativas reales del inventario.\n"
+    "4b. PAGOS MIXTOS: es muy común que el cliente pague una parte al contado y solo el resto con "
+    "Visa Cuotas. Si dice 'doy X de prima', mandá X en 'pago_contado'. Si dice 'quiero pasar solo X "
+    "por la tarjeta', mandá X en 'monto_a_tarjeta'. El recargo solo aplica a la parte de tarjeta, "
+    "así que conviene mencionarle que entre más pague al contado, menos recargo paga.\n"
 
-    "6. Respetá el sentido del rango de precio: 'más de X' es precio_min=X, "
-    "'hasta X' o 'menos de X' es precio_max=X. Jamás afirmes que no hay autos en un rango "
-    "sin haber consultado ese rango exacto.\n"
+    "5. NUNCA inventes autos, precios, millaje ni características. Todo dato viene de una "
+    "herramienta. Si un campo dice 'No especificado', decí que lo confirmás con un asesor.\n"
 
-    "7. FORMATO WHATSAPP OBLIGATORIO: prohibido Markdown. Nada de [texto](url), nada de "
-    "## títulos, nada de **doble asterisco**. Para negrita usá UN solo asterisco: *así*. "
-    "Los links van pelados, sin paréntesis ni corchetes.\n"
+    "6. Si 'coincidencias' es 0, decí claramente que no hay ese vehículo y ofrecé alternativas "
+    "reales del inventario.\n"
 
-    "8. Al LISTAR vehículos: máximo 4 por mensaje, y por auto solo esto:\n"
+    "7. Respetá el rango de precio: 'más de X' es precio_min=X, 'hasta X' es precio_max=X. "
+    "Jamás afirmes que no hay autos en un rango sin haber consultado ese rango exacto.\n"
+
+    "8. FORMATO WHATSAPP: prohibido Markdown. Nada de [texto](url), ## títulos ni **doble "
+    "asterisco**. Negrita con UN asterisco: *así*. Links pelados, sin paréntesis ni corchetes.\n"
+
+    "9. Al LISTAR: máximo 4 autos por mensaje, y por auto solo:\n"
     "*Marca Modelo* (Año)\n"
     "Q00,000 | ID: xx\n"
     "URL_DEL_LINK\n\n"
-    "No pongas el equipamiento en los listados. Si hay más resultados, decí cuántos faltan "
-    "y preguntá si quiere verlos o afinar la búsqueda.\n"
+    "No pongas equipamiento en los listados. Si hay más resultados, decí cuántos faltan.\n"
 
-    "9. Al dar el DETALLE de un auto: encabezado con *Marca Modelo (Año)* y precio, luego "
-    "motor, transmisión, millaje, combustible y color en líneas cortas, y después máximo 10 "
-    "puntos del equipamiento con guiones. Si hay más, ofrecé mandar el resto o el link de fotos.\n"
+    "10. Al dar DETALLE: encabezado *Marca Modelo (Año)* con precio, luego motor, transmisión, "
+    "millaje, combustible y color en líneas cortas, después máximo 10 puntos de equipamiento "
+    "con guiones. Si hay más, ofrecé mandar el resto.\n"
 
-    "10. Ubicación: 35 Avenida 16-33 Zona 7, Villa Linda 2. "
+    "11. Al dar CUOTAS: mostrá máximo 4 plazos por mensaje con el pago mensual de cada uno. "
+    "Aclará el recargo de ese plazo y que el monto es referencial y sujeto a aprobación del banco. "
+    "Nunca prometas aprobación. Si hay más plazos disponibles, mencionalos sin desglosarlos.\n"
+
+    "12. Si el sistema envió fotos, no digas 'no puedo mandar fotos'. Las imágenes ya se "
+    "mandaron aparte.\n"
+
+    "13. Ubicación: 35 Avenida 16-33 Zona 7, Villa Linda 2. "
     "Horarios: Lunes a Sábado 8:00 AM – 6:00 PM.\n"
 
-    "11. Formas de pago: Contado y Visa Cuotas (no damos crédito propio ni prestamos).\n"
+    "14. Formas de pago: Contado y Visa Cuotas (no damos crédito propio ni prestamos).\n"
 
-    "12. Si el cliente quiere hablar con un humano o asesor, indicá que un asesor "
-    "tomará el chat en breve."
+    "15. Si el cliente quiere hablar con un humano, indicá que un asesor tomará el chat en breve."
 )
 
-def procesar_mensaje_con_agente(from_number: str, user_text_raw: str) -> str:
+# ─── Agente AI ────────────────────────────────────────────────────────────────
+def procesar_mensaje_con_agente(from_number: str, user_text_raw: str) -> dict:
     if not openai_client:
-        return "Servicio temporalmente en mantenimiento."
+        return {"texto": "Servicio temporalmente en mantenimiento.", "fotos": []}
 
     historial = get_history(from_number)
-    system_prompt = {"role": "system", "content": SYSTEM_PROMPT_TEXT}
-
-    messages = [system_prompt] + historial + [{"role": "user", "content": user_text_raw}]
+    messages = ([{"role": "system", "content": SYSTEM_PROMPT_TEXT}]
+                + historial
+                + [{"role": "user", "content": user_text_raw}])
     append_to_history(from_number, "user", user_text_raw)
+
+    fotos_pendientes = []
 
     try:
         response = openai_client.chat.completions.create(
@@ -577,7 +756,6 @@ def procesar_mensaje_con_agente(from_number: str, user_text_raw: str) -> str:
             tool_choice="auto",
             temperature=0.3
         )
-
         response_message = response.choices[0].message
 
         if response_message.tool_calls:
@@ -590,7 +768,8 @@ def procesar_mensaje_con_agente(from_number: str, user_text_raw: str) -> str:
                 except Exception:
                     args = {}
 
-                resultado = despachar_tool(nombre, args)
+                resultado, fotos = despachar_tool(nombre, args)
+                fotos_pendientes.extend(fotos)
 
                 messages.append({
                     "role": "tool",
@@ -599,24 +778,32 @@ def procesar_mensaje_con_agente(from_number: str, user_text_raw: str) -> str:
                     "content": json.dumps(resultado, ensure_ascii=False)
                 })
 
-            segunda_respuesta = openai_client.chat.completions.create(
+            segunda = openai_client.chat.completions.create(
                 model="gpt-4o",
                 messages=messages,
                 temperature=0.3
             )
-            texto_final = segunda_respuesta.choices[0].message.content
+            texto_final = segunda.choices[0].message.content
         else:
             texto_final = response_message.content
 
-        texto_final = limpiar_markdown_whatsapp(texto_final or "")
-        texto_final = texto_final or "¿En qué más te puedo ayudar?"
-
+        texto_final = limpiar_markdown_whatsapp(texto_final or "") or "¿En qué más te puedo ayudar?"
         append_to_history(from_number, "assistant", texto_final)
-        return texto_final
+
+        vistas, fotos_unicas = set(), []
+        for f in fotos_pendientes:
+            if f["url"] and f["url"] not in vistas:
+                vistas.add(f["url"])
+                fotos_unicas.append(f)
+
+        return {"texto": texto_final, "fotos": fotos_unicas[:MAX_FOTOS_POR_RESPUESTA]}
 
     except Exception as e:
         logger.error("Error en OpenAI: %s", e)
-        return "Disculpa, estoy procesando mucha información. ¿Puedes repetir tu pregunta en unos segundos?"
+        return {
+            "texto": "Disculpa, estoy procesando mucha información. ¿Puedes repetir tu pregunta en unos segundos?",
+            "fotos": []
+        }
 
 # ─── Leads y Mensajería WhatsApp ──────────────────────────────────────────────
 def guardar_lead(telefono: str, mensaje: str, tipo: str):
@@ -624,13 +811,12 @@ def guardar_lead(telefono: str, mensaje: str, tipo: str):
         return
     def _guardar():
         try:
-            payload = {
+            requests.post(LEADS_WEBHOOK_URL, json={
                 "fecha": datetime.now(GUATEMALA_TZ).strftime("%Y-%m-%d %H:%M:%S"),
                 "telefono": telefono,
                 "mensaje": mensaje,
                 "tipo": tipo
-            }
-            requests.post(LEADS_WEBHOOK_URL, json=payload, timeout=REQUEST_TIMEOUT)
+            }, timeout=REQUEST_TIMEOUT)
         except Exception:
             pass
     threading.Thread(target=_guardar, daemon=True).start()
@@ -642,58 +828,146 @@ def send_whatsapp_payload(payload: dict):
     }
     try:
         res = requests.post(WHATSAPP_API_URL, headers=headers, json=payload, timeout=REQUEST_TIMEOUT)
+        if res is not None and res.status_code >= 400:
+            logger.error("WhatsApp %s: %s", res.status_code, res.text[:300])
         return res
     except Exception as e:
         logger.error("Error WhatsApp: %s", e)
         return None
 
+def dividir_mensaje(texto: str, limite: int = WHATSAPP_MAX_LEN) -> list:
+    """Parte un texto largo respetando párrafos, luego líneas, luego corte duro."""
+    texto = (texto or "").strip()
+    if len(texto) <= limite:
+        return [texto] if texto else []
+
+    partes, actual = [], ""
+    for bloque in texto.split("\n\n"):
+        candidato = f"{actual}\n\n{bloque}" if actual else bloque
+        if len(candidato) <= limite:
+            actual = candidato
+            continue
+
+        if actual:
+            partes.append(actual)
+            actual = ""
+
+        if len(bloque) <= limite:
+            actual = bloque
+            continue
+
+        for linea in bloque.split("\n"):
+            candidato = f"{actual}\n{linea}" if actual else linea
+            if len(candidato) <= limite:
+                actual = candidato
+            else:
+                if actual:
+                    partes.append(actual)
+                    actual = ""
+                while len(linea) > limite:
+                    partes.append(linea[:limite])
+                    linea = linea[limite:]
+                actual = linea
+
+    if actual:
+        partes.append(actual)
+
+    total = len(partes)
+    if total > 1:
+        partes = [f"{p}\n\n({i}/{total})" for i, p in enumerate(partes, 1)]
+    return partes
+
 def send_whatsapp_message(to_number: str, message_text: str):
+    partes = dividir_mensaje(message_text)
+    if not partes:
+        return None
+    respuesta = None
+    for i, parte in enumerate(partes):
+        respuesta = send_whatsapp_payload({
+            "messaging_product": "whatsapp",
+            "to": to_number,
+            "type": "text",
+            "text": {"body": parte}
+        })
+        if i < len(partes) - 1:
+            time.sleep(0.6)
+    if len(partes) > 1:
+        logger.info("Mensaje dividido en %d partes para %s", len(partes), to_number)
+    return respuesta
+
+def send_whatsapp_image(to_number: str, image_url: str, caption: str = ""):
+    if not image_url:
+        return None
     payload = {
         "messaging_product": "whatsapp",
         "to": to_number,
-        "type": "text",
-        "text": {"body": message_text}
+        "type": "image",
+        "image": {"link": image_url}
     }
-    return send_whatsapp_payload(payload)
+    if caption:
+        payload["image"]["caption"] = caption[:WHATSAPP_CAPTION_MAX]
+    res = send_whatsapp_payload(payload)
+    if res is not None and res.status_code >= 400:
+        logger.error("Falló envío de imagen: %s", image_url)
+    return res
 
 def build_advisor_link():
     return f"https://wa.me/{ADMIN_PHONE}?text={quote('Hola, vengo del bot')}"
 
-# ─── Controladores Principales de Mensajes ────────────────────────────────────
+# ─── Controladores de Mensajes ────────────────────────────────────────────────
 def handle_text_message(from_number: str, user_text_raw: str):
     user_text = normalize_text(user_text_raw)
 
     if user_text == "adminstats" and from_number == ADMIN_PHONE:
         inv = obtener_inventario()
         disponibles = [c for c in inv if str(c.get("marca") or "").strip() and esta_disponible(c)]
-        msg = (
-            f"📊 *Estadísticas de Hoy*\n"
-            f"Consultas Totales: {stats['consultas_hoy']}\n"
+        con_foto = [c for c in disponibles if url_imagen_directa(c.get("foto_principal"))]
+        send_whatsapp_message(from_number, (
+            f"📊 *Estadísticas*\n"
+            f"Consultas hoy: {stats['consultas_hoy']}\n"
+            f"Usuarios en sesión: {len(known_users)}\n"
             f"Vehículos en Sheet: {len(inv)}\n"
             f"Disponibles: {len(disponibles)}\n"
+            f"Con foto válida: {len(con_foto)}\n"
             f"Sesiones AI activas: {len(user_chat_histories)}"
-        )
-        send_whatsapp_message(from_number, msg)
+        ))
+        return
+
+    # Rate limit (el admin queda exento)
+    if from_number != ADMIN_PHONE and rate_limit_excedido(from_number):
+        logger.warning("Rate limit alcanzado por %s", from_number)
+        if debe_avisar_rate_limit(from_number):
+            send_whatsapp_message(from_number, (
+                "Estás enviando mensajes muy rápido 😅 Dame un minuto y seguimos. "
+                "Si es urgente, escribinos directo: " + build_advisor_link()
+            ))
         return
 
     with _state_lock:
+        if stats["fecha"] != hoy_str():
+            stats["fecha"] = hoy_str()
+            stats["consultas_hoy"] = 0
         stats["consultas_hoy"] += 1
-        if from_number not in known_users:
-            known_users.add(from_number)
-            guardar_lead(from_number, "Usuario Nuevo", "usuario_nuevo")
+        es_nuevo = from_number not in known_users
+        known_users.add(from_number)
 
-    respuesta_agente = procesar_mensaje_con_agente(from_number, user_text_raw)
-    send_whatsapp_message(from_number, respuesta_agente)
+    if es_nuevo:
+        guardar_lead(from_number, "Usuario Nuevo", "usuario_nuevo")
+
+    resultado = procesar_mensaje_con_agente(from_number, user_text_raw)
+    send_whatsapp_message(from_number, resultado["texto"])
+
+    for foto in resultado.get("fotos", []):
+        send_whatsapp_image(from_number, foto["url"], foto.get("caption", ""))
+        time.sleep(0.4)
 
 def handle_interactive_message(from_number: str, interactive: dict):
-    interactive_type = interactive.get("type")
+    tipo = interactive.get("type")
     user_text = ""
-
-    if interactive_type == "list_reply":
+    if tipo == "list_reply":
         user_text = interactive.get("list_reply", {}).get("title", "")
-    elif interactive_type == "button_reply":
+    elif tipo == "button_reply":
         user_text = interactive.get("button_reply", {}).get("title", "")
-
     if user_text:
         handle_text_message(from_number, f"El usuario seleccionó la opción: {user_text}")
 
@@ -721,7 +995,7 @@ def process_single_message(message: dict):
 
     return f"ignored_{message_type}"
 
-# ─── Rutas Webhook y Flask ────────────────────────────────────────────────────
+# ─── Rutas ────────────────────────────────────────────────────────────────────
 def verify_meta_signature(request_data: bytes, signature_header: str) -> bool:
     if not APP_SECRET:
         return True
@@ -747,27 +1021,42 @@ def debug_inventario():
     data = obtener_inventario()
     validos = [c for c in data if str(c.get("marca") or "").strip()]
     disponibles = [c for c in validos if esta_disponible(c)]
+    con_foto = [c for c in validos if url_imagen_directa(c.get("foto_principal"))]
     return jsonify({
         "sheet_url_configurada": bool(SHEET_URL),
         "openai_configurado": bool(openai_client),
         "registros": len(data),
         "con_marca": len(validos),
         "disponibles": len(disponibles),
+        "con_foto_valida": len(con_foto),
         "estados_encontrados": sorted({str(c.get("estado") or "(vacio)") for c in validos}),
         "llaves_detectadas": list(data[0].keys()) if data else [],
+        "ejemplo_foto": url_imagen_directa(con_foto[0].get("foto_principal")) if con_foto else None,
         "muestra": data[:2]
     }), 200
 
+@app.route("/debug-cuotas", methods=["GET"])
+def debug_cuotas():
+    """Prueba rápida: /debug-cuotas?id=1&contado=20000&cuotas=12"""
+    resultado, _ = ejecutar_tool_visa_cuotas(
+        id_vehiculo=request.args.get("id"),
+        monto=request.args.get("monto", type=float),
+        cuotas=request.args.get("cuotas", type=int),
+        pago_contado=request.args.get("contado", type=float),
+        monto_a_tarjeta=request.args.get("tarjeta", type=float)
+    )
+    return jsonify(resultado), 200
+
 @app.route("/webhook", methods=["GET"])
 def verify_webhook():
-    if request.args.get("hub.mode") == "subscribe" and request.args.get("hub.verify_token") == VERIFY_TOKEN:
+    if (request.args.get("hub.mode") == "subscribe"
+            and request.args.get("hub.verify_token") == VERIFY_TOKEN):
         return request.args.get("hub.challenge"), 200
     return "Token inválido", 403
 
 @app.route("/webhook", methods=["POST"])
 def receive_message():
-    signature = request.headers.get("X-Hub-Signature-256", "")
-    if not verify_meta_signature(request.data, signature):
+    if not verify_meta_signature(request.data, request.headers.get("X-Hub-Signature-256", "")):
         return jsonify({"status": "unauthorized"}), 401
 
     data = request.get_json(silent=True) or {}
@@ -781,7 +1070,7 @@ def receive_message():
         logger.error("Error Webhook: %s", e)
         return jsonify({"status": "ok_error_handled"}), 200
 
-# ─── Carga inicial (también aplica bajo gunicorn en Render) ───────────────────
+# ─── Arranque (aplica también bajo gunicorn en Render) ────────────────────────
 try:
     refrescar_inventario()
 except Exception as e:
