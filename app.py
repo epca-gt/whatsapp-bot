@@ -180,6 +180,26 @@ def formatear_descripcion(desc) -> list:
     lineas = [_limpiar_vinieta(l) for l in str(desc).split("\n")]
     return [l for l in lineas if l]
 
+def construir_caption_foto(carro: dict) -> str:
+    """
+    Arma el caption de WhatsApp con los datos reales del Sheet.
+    La foto (marco/branding) se sube UNA sola vez por carro; el texto se
+    actualiza solo en cada consulta, así que un cambio de precio no
+    requiere tocar la imagen.
+    """
+    partes = [
+        f"*{carro.get('marca','')} {carro.get('modelo','')}* ({carro.get('anio','')})",
+        f"💰 {carro.get('precio','')}"
+    ]
+    if carro.get("millaje"):
+        partes.append(f"🛣️ {carro.get('millaje')} millas")
+    motor_trans = f"{carro.get('motor','')} {carro.get('transmision','')}".strip()
+    if motor_trans:
+        partes.append(f"⚙️ {motor_trans}")
+    if carro.get("color"):
+        partes.append(f"🎨 {carro.get('color')}")
+    return "\n".join(partes)[:WHATSAPP_CAPTION_MAX]
+
 def esta_disponible(carro: dict) -> bool:
     if not FILTRAR_POR_ESTADO:
         return True
@@ -511,7 +531,7 @@ def ejecutar_tool_inventario(marca=None, modelo=None, precio_max=None, anio=None
         })
         fotos.append({
             "url": url_imagen_directa(c.get("foto_principal")),
-            "caption": f"*{marca_auto} {c.get('modelo','')}* ({c.get('anio','')}) - {c.get('precio','')}"
+            "caption": construir_caption_foto(c)
         })
 
     logger.info("TOOL lista -> total=%d filtrado=%d (marca=%s modelo=%s min=%s max=%s anio=%s)",
@@ -548,8 +568,7 @@ def ejecutar_tool_detalle(id=None, descripcion_vehiculo=None):
     if foto_url:
         fotos.append({
             "url": foto_url,
-            "caption": (f"*{carro.get('marca','')} {carro.get('modelo','')}* "
-                        f"({carro.get('anio','')}) - {carro.get('precio','')}")
+            "caption": construir_caption_foto(carro)
         })
 
     return {
@@ -1036,7 +1055,8 @@ def debug_inventario():
         "estados_encontrados": sorted({str(c.get("estado") or "(vacio)") for c in validos}),
         "llaves_detectadas": list(data[0].keys()) if data else [],
         "fotos_convertidas": [
-            {"id": c.get("id"), "url": url_imagen_directa(c.get("foto_principal"))}
+            {"id": c.get("id"), "url": url_imagen_directa(c.get("foto_principal")),
+             "caption": construir_caption_foto(c)}
             for c in con_foto[:5]
         ],
         "muestra": data[:2]
