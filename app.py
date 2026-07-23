@@ -55,7 +55,7 @@ RATE_LIMIT_AVISO_TTL   = 300   # no repetir el aviso antes de 5 min
 WHATSAPP_MAX_LEN       = 3900  # margen bajo el límite real de 4096
 WHATSAPP_CAPTION_MAX   = 1000  # límite de caption en imágenes (real: 1024)
 
-MAX_RESULTADOS_LISTA   = 25    # con inventario chico no hay razón para cortar antes
+MAX_RESULTADOS_LISTA   = 40    # con inventario chico no hay razón para cortar antes
 MAX_ITEMS_RESUMEN      = 6
 MAX_FOTOS_POR_RESPUESTA = 3
 FOTOS_SI_COINCIDENCIAS_MENOR_A = 4
