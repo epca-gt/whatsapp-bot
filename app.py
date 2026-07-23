@@ -55,7 +55,7 @@ RATE_LIMIT_AVISO_TTL   = 300   # no repetir el aviso antes de 5 min
 WHATSAPP_MAX_LEN       = 3900  # margen bajo el límite real de 4096
 WHATSAPP_CAPTION_MAX   = 1000  # límite de caption en imágenes (real: 1024)
 
-MAX_RESULTADOS_LISTA   = 12
+MAX_RESULTADOS_LISTA   = 25    # con inventario chico no hay razón para cortar antes
 MAX_ITEMS_RESUMEN      = 6
 MAX_FOTOS_POR_RESPUESTA = 3
 FOTOS_SI_COINCIDENCIAS_MENOR_A = 4
@@ -339,17 +339,23 @@ def obtener_inventario():
     return list(data)
 
 def buscar_carro_por_id(vehicle_id: str):
-    objetivo = normalize_text(str(vehicle_id))
+    objetivo = normalize_text(str(vehicle_id)).rstrip(".")
     for carro in obtener_inventario():
         if normalize_text(str(carro.get("id", ""))) == objetivo:
             return carro
     return None
 
 def buscar_carro_por_texto(texto: str):
+    """
+    Búsqueda flexible: primero subcadena completa; si falla, gana el carro
+    con MÁS palabras coincidentes (no exige que todas coincidan, que era
+    la causa de que 'no reconociera' carros con nombres parciales).
+    """
     carros = obtener_inventario()
     consulta = normalize_text(texto)
     if not consulta:
         return None
+
     for carro in carros:
         etiqueta = normalize_text(
             f"{carro.get('marca','')} {carro.get('modelo','')} {carro.get('anio','')}"
@@ -358,11 +364,22 @@ def buscar_carro_por_texto(texto: str):
             continue
         if consulta in etiqueta or etiqueta in consulta:
             return carro
+
     palabras = [p for p in consulta.split() if len(p) > 2]
+    if not palabras:
+        return None
+
+    mejor_match, mejor_score = None, 0
     for carro in carros:
         etiqueta = normalize_text(f"{carro.get('marca','')} {carro.get('modelo','')}")
-        if palabras and all(p in etiqueta for p in palabras):
-            return carro
+        if not etiqueta.strip():
+            continue
+        score = sum(1 for p in palabras if p in etiqueta)
+        if score > mejor_score:
+            mejor_score, mejor_match = score, carro
+
+    if mejor_match and mejor_score >= 1:
+        return mejor_match
     return None
 
 # ─── Loops en background ──────────────────────────────────────────────────────
@@ -510,6 +527,32 @@ INVENTORY_TOOLS = [
             ),
             "parameters": {"type": "object", "properties": {}, "required": []}
         }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "contactar_asesor",
+            "description": (
+                "Conecta al cliente con un asesor humano. Usar cuando el cliente pida hablar con "
+                "una persona, un vendedor, un humano, quiera negociar precio, o el bot no pueda "
+                "resolver su consulta. Incluí un resumen breve de lo que el cliente busca para "
+                "que el asesor tenga contexto."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "resumen": {
+                        "type": "string",
+                        "description": (
+                            "Resumen en una frase de qué busca el cliente, con el vehículo e ID si "
+                            "aplica. Ej: 'Interesado en Nissan 350z (ID 1), preguntó por 24 cuotas "
+                            "con Q20,000 de prima'. Si no hay contexto, dejar vacío."
+                        )
+                    }
+                },
+                "required": []
+            }
+        }
     }
 ]
 
@@ -611,7 +654,8 @@ def ejecutar_tool_detalle(id=None, descripcion_vehiculo=None):
         "nota": (
             "IMPORTANTE: la foto que se envía junto con esta respuesta ya muestra precio, motor, "
             "transmisión, millaje y color en su caption. NO repitas esos datos en tu texto: enfocate "
-            "solo en el equipamiento (lista de abajo) y en invitar a agendar una cita."
+            "solo en el equipamiento (lista de abajo) y en invitar a visitarnos, sin necesidad "
+            "de agendar cita previa."
         )
     }, fotos
 
@@ -708,11 +752,38 @@ def ejecutar_tool_ubicacion():
         "nota": (
             "El pin de ubicación ya se envió como mensaje nativo de WhatsApp. "
             "Solo mencioná brevemente la dirección y horarios; no repitas los links, "
-            "ya se muestran en el mapa."
+            "ya se muestran en el mapa. Recordá que no se necesita cita previa para visitar."
         )
     }, []
 
-def despachar_tool(nombre: str, args: dict):
+def construir_link_asesor(cliente: str, resumen: str) -> str:
+    """Link wa.me al asesor con el contexto precargado en el texto."""
+    texto = "Hola, vengo del bot de Los Gemelos y Fer."
+    if resumen:
+        texto += f" {resumen}"
+    return f"https://wa.me/{ADMIN_PHONE}?text={quote(texto)}"
+
+def ejecutar_tool_asesor(cliente: str, resumen: str = ""):
+    resumen = (resumen or "").strip()
+    link = construir_link_asesor(cliente, resumen)
+
+    # Alerta al negocio: queda en el Sheet de leads (y en logs) con el contexto,
+    # para que puedan escribirle al cliente proactivamente.
+    detalle_lead = resumen if resumen else "Cliente pidió hablar con un asesor"
+    guardar_lead(cliente, detalle_lead, "solicita_asesor")
+    logger.info("TOOL asesor -> cliente=%s resumen=%s", cliente, resumen or "(sin contexto)")
+
+    return {
+        "link_asesor": link,
+        "nota": (
+            "Compartí este link con el cliente para que escriba directo al asesor; el mensaje "
+            "ya lleva su contexto precargado, así no tiene que repetir nada. Avisale también "
+            "que ya notificamos al equipo y que si prefiere, un asesor puede contactarlo a él. "
+            "El link va pelado, sin formato Markdown."
+        )
+    }, []
+
+def despachar_tool(nombre: str, args: dict, cliente: str = ""):
     """Devuelve (resultado_json, fotos_a_enviar)."""
     if nombre == "consultar_inventario":
         return ejecutar_tool_inventario(
@@ -737,12 +808,14 @@ def despachar_tool(nombre: str, args: dict):
         )
     if nombre == "enviar_ubicacion":
         return ejecutar_tool_ubicacion()
+    if nombre == "contactar_asesor":
+        return ejecutar_tool_asesor(cliente, args.get("resumen", ""))
     return {"error": f"Herramienta desconocida: {nombre}"}, []
 
 # ─── System Prompt ────────────────────────────────────────────────────────────
 SYSTEM_PROMPT_TEXT = (
     "Eres el asesor virtual inteligente de Importadora Los Gemelos y Fer en Guatemala. "
-    "Tu objetivo es ayudar a los clientes a encontrar vehículos, resolver dudas y agendar citas.\n\n"
+    "Tu objetivo es ayudar a los clientes a encontrar vehículos y resolver dudas.\n\n"
 
     "REGLAS OBLIGATORIAS:\n"
 
@@ -766,6 +839,11 @@ SYSTEM_PROMPT_TEXT = (
     "4c. Usá 'enviar_ubicacion' cuando pregunten dónde están, cómo llegar, la dirección, o pidan "
     "el Waze/Maps del local.\n"
 
+    "4d. Usá 'contactar_asesor' cuando el cliente pida hablar con una persona, un vendedor o un "
+    "humano, quiera negociar el precio, o tengas una consulta que no podés resolver. SIEMPRE "
+    "incluí en 'resumen' qué busca el cliente (vehículo, ID, qué preguntó) para que el asesor "
+    "tenga el contexto sin que el cliente repita nada.\n"
+
     "5. NUNCA inventes autos, precios, millaje ni características. Todo dato viene de una "
     "herramienta. Si un campo dice 'No especificado', decí que lo confirmás con un asesor.\n"
 
@@ -788,7 +866,7 @@ SYSTEM_PROMPT_TEXT = (
     "en el caption — NO los repitas en el texto. En el texto poné solo un encabezado corto "
     "*Marca Modelo (Año)*, luego máximo 10 puntos de equipamiento con guiones, y el link de fotos "
     "adicionales si existe. Si hay más equipamiento, ofrecé mandar el resto. Cerrá invitando a "
-    "agendar una cita.\n"
+    "visitarnos a verlo en persona, sin necesidad de agendar cita previa.\n"
 
     "11. Al dar CUOTAS: mostrá máximo 4 plazos por mensaje con el pago mensual de cada uno. "
     "Aclará el recargo de ese plazo y que el monto es referencial y sujeto a aprobación del banco. "
@@ -798,11 +876,10 @@ SYSTEM_PROMPT_TEXT = (
     "Ya se mandaron aparte como mensajes nativos.\n"
 
     "13. Ubicación: 35 Avenida 16-33 Zona 7, Villa Linda 2. "
-    "Horarios: Lunes a Sábado 8:00 AM – 6:00 PM.\n"
+    "Horarios: Lunes a Sábado 8:00 AM – 6:00 PM. NO se necesita cita previa para visitarnos: "
+    "los clientes pueden llegar directo en horario de atención.\n"
 
     "14. Formas de pago: Contado y Visa Cuotas (no damos crédito propio ni prestamos).\n"
-
-    "15. Si el cliente quiere hablar con un humano, indicá que un asesor tomará el chat en breve."
 )
 
 # ─── Agente AI ────────────────────────────────────────────────────────────────
@@ -842,7 +919,7 @@ def procesar_mensaje_con_agente(from_number: str, user_text_raw: str) -> dict:
                 if nombre == "enviar_ubicacion":
                     ubicacion_pedida = True
 
-                resultado, fotos = despachar_tool(nombre, args)
+                resultado, fotos = despachar_tool(nombre, args, cliente=from_number)
                 fotos_pendientes.extend(fotos)
 
                 messages.append({
@@ -1158,6 +1235,22 @@ def debug_cuotas():
 def debug_ubicacion():
     resultado, _ = ejecutar_tool_ubicacion()
     return jsonify(resultado), 200
+
+@app.route("/debug-buscar", methods=["GET"])
+def debug_buscar():
+    """Prueba la búsqueda flexible: /debug-buscar?q=nissan 350"""
+    q = request.args.get("q", "")
+    carro = buscar_carro_por_texto(q)
+    if not carro:
+        return jsonify({"consulta": q, "encontrado": False}), 200
+    return jsonify({
+        "consulta": q,
+        "encontrado": True,
+        "id": carro.get("id"),
+        "marca": carro.get("marca"),
+        "modelo": carro.get("modelo"),
+        "anio": carro.get("anio")
+    }), 200
 
 @app.route("/webhook", methods=["GET"])
 def verify_webhook():
