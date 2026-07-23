@@ -902,6 +902,11 @@ SYSTEM_PROMPT_TEXT = (
     "18. Si el cliente pregunta 'cuál es el precio final', 'hay margen', o 'puedo negociar', "
     "responde honestamente que los precios son los de la base de datos de la importadora, pero que puede hablar con un asesor "
     "sobre opciones. NO prometas descuentos ni ofertas que no existen."
+    "19. Recepción de vehículos: Los Gemelos y Fer recibe vehículos SOLO como parte de pago. "
+    "Si el cliente pregunta sobre vender/canjear su auto, explica que lo aceptamos en parte de pago por otro carro "
+    "y invitalo a contactar con un asesor para evaluar la propuesta. "
+    "No prometas valores ni procesos específicos—eso lo maneja el equipo de ventas.\n"
+)
 )
 
 # ─── Agente AI ────────────────────────────────────────────────────────────────
