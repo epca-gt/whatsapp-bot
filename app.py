@@ -122,6 +122,11 @@ def normalize_text(text: str) -> str:
     text = text.strip().lower()
     return re.sub(r"\s+", " ", text)
 
+def normalize_match(text: str) -> str:
+    """Para comparar marca/modelo: quita guiones, espacios y todo lo no alfanumérico.
+    Así 'hrv' == 'HR-V', 'cr v' == 'CR-V', 'f150' == 'F-150'."""
+    return re.sub(r"[^a-z0-9]", "", normalize_text(text))
+
 def parse_price_value(price_text):
     if price_text is None:
         return None
@@ -347,32 +352,35 @@ def buscar_carro_por_id(vehicle_id: str):
 
 def buscar_carro_por_texto(texto: str):
     """
-    Búsqueda flexible: primero subcadena completa; si falla, gana el carro
-    con MÁS palabras coincidentes (no exige que todas coincidan, que era
-    la causa de que 'no reconociera' carros con nombres parciales).
+    Búsqueda flexible e insensible a guiones/espacios ('hrv' encuentra 'HR-V').
+    Primero subcadena compactada; si falla, gana el carro con MÁS palabras
+    coincidentes (no exige que todas coincidan, que era la causa de que
+    'no reconociera' carros con nombres parciales).
     """
     carros = obtener_inventario()
     consulta = normalize_text(texto)
-    if not consulta:
+    consulta_compacta = normalize_match(texto)
+    if not consulta_compacta:
         return None
 
     for carro in carros:
-        etiqueta = normalize_text(
+        etiqueta_compacta = normalize_match(
             f"{carro.get('marca','')} {carro.get('modelo','')} {carro.get('anio','')}"
         )
-        if not etiqueta.strip():
+        if not etiqueta_compacta:
             continue
-        if consulta in etiqueta or etiqueta in consulta:
+        if consulta_compacta in etiqueta_compacta or etiqueta_compacta in consulta_compacta:
             return carro
 
-    palabras = [p for p in consulta.split() if len(p) > 2]
+    palabras = [normalize_match(p) for p in consulta.split() if len(p) > 2]
+    palabras = [p for p in palabras if p]
     if not palabras:
         return None
 
     mejor_match, mejor_score = None, 0
     for carro in carros:
-        etiqueta = normalize_text(f"{carro.get('marca','')} {carro.get('modelo','')}")
-        if not etiqueta.strip():
+        etiqueta = normalize_match(f"{carro.get('marca','')} {carro.get('modelo','')}")
+        if not etiqueta:
             continue
         score = sum(1 for p in palabras if p in etiqueta)
         if score > mejor_score:
@@ -564,9 +572,9 @@ def ejecutar_tool_inventario(marca=None, modelo=None, precio_max=None, anio=None
         marca_auto = str(c.get("marca") or "").strip()
         if not marca_auto or not esta_disponible(c):
             continue
-        if marca and normalize_text(marca) not in normalize_text(marca_auto):
+        if marca and normalize_match(marca) not in normalize_match(marca_auto):
             continue
-        if modelo and normalize_text(modelo) not in normalize_text(str(c.get("modelo") or "")):
+        if modelo and normalize_match(modelo) not in normalize_match(str(c.get("modelo") or "")):
             continue
         if anio and str(c.get("anio") or "").strip() != str(anio):
             continue
