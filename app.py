@@ -803,6 +803,29 @@ def ejecutar_tool_visa_cuotas(id_vehiculo=None, monto=None, cuotas=None,
                 base, contado, tarjeta, cuotas)
     return resultado, []
 
+def quitar_texto_de_cuotas(texto: str) -> str:
+    """
+    Saca del texto del modelo cualquier línea con cifras de financiamiento.
+    Los montos los pone SIEMPRE el bloque calculado en Python; si el modelo
+    también los escribe, el cliente ve la información duplicada.
+    """
+    if not texto:
+        return ""
+    marcadores = ("cuota", "/mes", "recargo", "mensual", "total a pagar",
+                  "monto financiado", "referencial", "banco emisor")
+    limpias = []
+    for linea in texto.split("\n"):
+        bajo = normalize_text(linea)
+        tiene_monto = bool(re.search(r"q\s?[\d.,]{3,}", bajo))
+        if tiene_monto and any(m in bajo for m in marcadores):
+            continue
+        if any(m in bajo for m in ("total a pagar", "banco emisor", "monto financiado")):
+            continue
+        limpias.append(linea)
+    # Colapsa líneas en blanco que quedaron sueltas
+    salida = re.sub(r"\n{3,}", "\n\n", "\n".join(limpias))
+    return salida.strip()
+
 def formatear_bloque_cuotas(resultado: dict) -> str:
     """
     Arma el texto EXACTO de la respuesta de cuotas a partir del cálculo en Python.
@@ -1094,16 +1117,23 @@ def procesar_mensaje_con_agente(from_number: str, user_text_raw: str) -> dict:
 
         # Los montos de cuotas SIEMPRE los arma Python desde el cálculo real.
         # El modelo nunca redacta cifras de financiamiento.
+        texto_para_historial = None
         if resultado_cuotas is not None:
             bloque = formatear_bloque_cuotas(resultado_cuotas)
             texto_modelo = limpiar_markdown_whatsapp(texto_final or "").strip()
+            texto_modelo = quitar_texto_de_cuotas(texto_modelo)
             texto_final = f"{texto_modelo}\n\n{bloque}" if texto_modelo else bloque
+            # En el historial NO guardamos el bloque: si el modelo lo ve en sus
+            # mensajes previos lo imita y termina duplicando los montos.
+            texto_para_historial = (
+                f"{texto_modelo}\n\n[El sistema envió el cálculo de cuotas ya formateado.]"
+            ).strip()
 
         if vehiculos_mencionados:
             guardar_contexto_vehiculos(from_number, vehiculos_mencionados)
 
         texto_final = limpiar_markdown_whatsapp(texto_final or "") or "¿En qué más te puedo ayudar?"
-        append_to_history(from_number, "assistant", texto_final)
+        append_to_history(from_number, "assistant", texto_para_historial or texto_final)
 
         vistas, fotos_unicas = set(), []
         for f in fotos_pendientes:
