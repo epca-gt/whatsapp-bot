@@ -55,7 +55,7 @@ RATE_LIMIT_AVISO_TTL   = 300   # no repetir el aviso antes de 5 min
 WHATSAPP_MAX_LEN       = 3900  # margen bajo el límite real de 4096
 WHATSAPP_CAPTION_MAX   = 1000  # límite de caption en imágenes (real: 1024)
 
-MAX_RESULTADOS_LISTA   = 40    # con inventario chico no hay razón para cortar antes
+MAX_RESULTADOS_LISTA   = 25    # con inventario chico no hay razón para cortar antes
 MAX_ITEMS_RESUMEN      = 6
 MAX_FOTOS_POR_RESPUESTA = 3
 FOTOS_SI_COINCIDENCIAS_MENOR_A = 4
@@ -750,6 +750,53 @@ def ejecutar_tool_visa_cuotas(id_vehiculo=None, monto=None, cuotas=None,
                 base, contado, tarjeta, cuotas)
     return resultado, []
 
+def formatear_bloque_cuotas(resultado: dict) -> str:
+    """
+    Arma el texto EXACTO de la respuesta de cuotas a partir del cálculo en Python.
+    No se deja que el modelo redacte los números: un LLM puede transcribir mal una
+    cifra o mezclar el recargo de un plazo con el pago de otro. Esta función
+    garantiza que lo que ve el cliente es exactamente lo que calculó la fórmula.
+    """
+    if "error" in resultado:
+        return resultado["error"]
+    if "mensaje" in resultado and "planes" not in resultado and "plan_solicitado" not in resultado:
+        # Caso: el contado ya cubre todo el vehículo.
+        partes = []
+        if resultado.get("vehiculo"):
+            partes.append(f"*{resultado['vehiculo']}*")
+        partes.append(resultado["mensaje"])
+        return "\n".join(partes)
+
+    lineas = []
+    if resultado.get("vehiculo"):
+        lineas.append(f"*{resultado['vehiculo']}*")
+    lineas.append(f"💰 Precio: {resultado.get('precio_vehiculo', '')}")
+    if resultado.get("pago_contado") and resultado["pago_contado"] not in ("Q0.00", None):
+        lineas.append(f"💵 Pago al contado: {resultado['pago_contado']}")
+    lineas.append(f"💳 Monto financiado por tarjeta: {resultado.get('monto_por_tarjeta', '')}")
+    lineas.append("")
+
+    def linea_plan(p):
+        return (f"*{p['cuotas']} cuotas*: {p['pago_mensual']}/mes "
+                f"(recargo {p['recargo_pct']}, total a pagar {p['total_a_pagar']})")
+
+    if "plan_solicitado" in resultado:
+        lineas.append(linea_plan(resultado["plan_solicitado"]))
+    elif "planes" in resultado:
+        for p in resultado["planes"][:4]:
+            lineas.append(linea_plan(p))
+        otros = resultado.get("otros_plazos_disponibles")
+        if otros:
+            lineas.append(f"\nTambién manejamos plazos de {', '.join(str(o) for o in otros)} meses.")
+
+    if resultado.get("error_plan"):
+        lineas.append(f"\n{resultado['error_plan']}")
+
+    lineas.append(
+        f"\n_{resultado.get('aviso', 'Montos referenciales, sujetos a aprobación del banco.')}_"
+    )
+    return "\n".join(lineas)
+
 def ejecutar_tool_ubicacion():
     logger.info("TOOL ubicacion -> enviada")
     return {
@@ -823,7 +870,7 @@ def despachar_tool(nombre: str, args: dict, cliente: str = ""):
 # ─── System Prompt ────────────────────────────────────────────────────────────
 SYSTEM_PROMPT_TEXT = (
     "Eres el asesor virtual inteligente de Importadora Los Gemelos y Fer en Guatemala. "
-    "Tu objetivo es ayudar a los clientes a encontrar vehículos, saber el precio de los vehiculos y resolver dudas.\n\n"
+    "Tu objetivo es ayudar a los clientes a encontrar vehículos y resolver dudas.\n\n"
 
     "REGLAS OBLIGATORIAS:\n"
 
@@ -868,7 +915,7 @@ SYSTEM_PROMPT_TEXT = (
     "*Marca Modelo* (Año)\n"
     "Q00,000 | ID: xx\n"
     "URL_DEL_LINK\n\n"
-    "No pongas equipamiento en los listados. Si hay más resultados tienes que ser especifico en que hay mas, decí cuántos faltan.\n"
+    "No pongas equipamiento en los listados. Si hay más resultados, decí cuántos faltan.\n"
 
     "10. Al dar DETALLE: la foto que se envía ya trae precio, motor, transmisión, millaje y color "
     "en el caption — NO los repitas en el texto. En el texto poné solo un encabezado corto "
@@ -888,25 +935,29 @@ SYSTEM_PROMPT_TEXT = (
     "los clientes pueden llegar directo en horario de atención.\n"
 
     "14. Formas de pago: Contado y Visa Cuotas (no damos crédito propio ni prestamos).\n"
-    
-    "15. Si el cliente pregunta por opciones de pago, promociones, descuentos o formas de financiamiento "
-    "que NO sean Visa Cuotas, responde honestamente que solo manejas Contado y Visa Cuotas. "
-    "No inventes crédito, leasing, o planes que no existen.\n"
-    
-    "16. Si el cliente pide 'más fotos' de un carro, menciona el link_fotos (la carpeta de Drive) "
-    "directamente sin intentar mandárselas por WhatsApp. Decí: 'Aquí están todas las fotos: [link]'."
 
-    "17. Si el cliente ya preguntó por un carro en este chat, recordá esa consulta. "
-    "Si pregunta de nuevo, no repitas el detalle completo a menos que pida 'de nuevo'."
+    "15. Si el cliente pregunta por opciones de pago, promociones, descuentos o formas de "
+    "financiamiento que NO sean Visa Cuotas, responde honestamente que solo manejas Contado y "
+    "Visa Cuotas. No inventes crédito, leasing, o planes que no existen.\n"
+
+    "16. Si el cliente pide 'más fotos' de un carro, menciona el link_fotos (la carpeta de Drive) "
+    "directamente sin intentar mandárselas por WhatsApp. Decí: 'Aquí están todas las fotos: [link]'.\n"
+
+    "17. Si el cliente ya preguntó por un carro en este chat, recordá esa consulta. Si pregunta de "
+    "nuevo, no repitas el detalle completo a menos que pida 'de nuevo'.\n"
 
     "18. Si el cliente pregunta 'cuál es el precio final', 'hay margen', o 'puedo negociar', "
-    "responde honestamente que los precios son los de la base de datos de la importadora, pero que puede hablar con un asesor "
-    "sobre opciones. NO prometas descuentos ni ofertas que no existen."
-    "19. Recepción de vehículos: Los Gemelos y Fer recibe vehículos SOLO como parte de pago. "
-    "Si el cliente pregunta sobre vender/canjear su auto, explica que lo aceptamos en parte de pago por otro carro "
-    "y invitalo a contactar con un asesor para evaluar la propuesta. "
-    "No prometas valores ni procesos específicos—eso lo maneja el equipo de ventas.\n"
-)
+    "responde honestamente que los precios son los de la base de datos de la importadora, pero que "
+    "puede hablar con un asesor sobre opciones. NO prometas descuentos ni ofertas que no existen.\n"
+
+    "19. Recepción de vehículos: Los Gemelos y Fer recibe vehículos SOLO como parte de pago. Si el "
+    "cliente pregunta sobre vender/canjear su auto, explica que lo aceptamos en parte de pago por "
+    "otro carro y invitalo a contactar con un asesor para evaluar la propuesta. No prometas valores "
+    "ni procesos específicos—eso lo maneja el equipo de ventas.\n"
+
+    "20. Para preguntas de CUOTAS: el sistema ya va a mandar el bloque con los montos exactos "
+    "calculados. No necesitás redactar cifras en tu respuesta a menos que también estés "
+    "respondiendo otra cosa en el mismo mensaje.\n"
 )
 
 # ─── Agente AI ────────────────────────────────────────────────────────────────
@@ -922,6 +973,8 @@ def procesar_mensaje_con_agente(from_number: str, user_text_raw: str) -> dict:
 
     fotos_pendientes = []
     ubicacion_pedida = False
+    tools_llamadas = []
+    resultado_cuotas = None
 
     try:
         response = openai_client.chat.completions.create(
@@ -948,6 +1001,9 @@ def procesar_mensaje_con_agente(from_number: str, user_text_raw: str) -> dict:
 
                 resultado, fotos = despachar_tool(nombre, args, cliente=from_number)
                 fotos_pendientes.extend(fotos)
+                tools_llamadas.append(nombre)
+                if nombre == "calcular_visa_cuotas":
+                    resultado_cuotas = resultado
 
                 messages.append({
                     "role": "tool",
@@ -956,12 +1012,18 @@ def procesar_mensaje_con_agente(from_number: str, user_text_raw: str) -> dict:
                     "content": json.dumps(resultado, ensure_ascii=False)
                 })
 
-            segunda = openai_client.chat.completions.create(
-                model="gpt-4o",
-                messages=messages,
-                temperature=0.3
-            )
-            texto_final = segunda.choices[0].message.content
+            # Si la ÚNICA herramienta llamada fue cuotas, no dejamos que el modelo
+            # redacte los números: los arma Python directo desde el cálculo, así
+            # nunca hay riesgo de que transcriba mal una cifra o un recargo.
+            if tools_llamadas == ["calcular_visa_cuotas"] and resultado_cuotas is not None:
+                texto_final = formatear_bloque_cuotas(resultado_cuotas)
+            else:
+                segunda = openai_client.chat.completions.create(
+                    model="gpt-4o",
+                    messages=messages,
+                    temperature=0.3
+                )
+                texto_final = segunda.choices[0].message.content
         else:
             texto_final = response_message.content
 
