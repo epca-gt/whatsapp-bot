@@ -55,7 +55,10 @@ RATE_LIMIT_AVISO_TTL   = 300   # no repetir el aviso antes de 5 min
 WHATSAPP_MAX_LEN       = 3900  # margen bajo el límite real de 4096
 WHATSAPP_CAPTION_MAX   = 1000  # límite de caption en imágenes (real: 1024)
 
-MAX_RESULTADOS_LISTA   = 25    # con inventario chico no hay razón para cortar antes
+MAX_RONDAS_TOOLS       = 4     # rondas de tool-calling encadenado dentro de un turno
+MAX_CONTEXTO_VEHICULOS = 8     # cuántos vehículos recordar entre turnos (para los IDs)
+
+MAX_RESULTADOS_LISTA   = 40    # con inventario chico no hay razón para cortar antes
 MAX_ITEMS_RESUMEN      = 6
 MAX_FOTOS_POR_RESPUESTA = 3
 FOTOS_SI_COINCIDENCIAS_MENOR_A = 4
@@ -97,6 +100,7 @@ recent_user_messages = {}
 user_chat_histories  = {}
 user_rate_limits     = {}
 rate_limit_avisados  = {}
+user_contexto_vehiculos = {}   # phone -> {"vehiculos": [...], "updated_at": ts}
 
 stats = {"consultas_hoy": 0, "vehiculos_vistos": {}, "asesores_hoy": [], "fecha": None}
 
@@ -293,6 +297,51 @@ def get_history(phone: str):
     with _state_lock:
         return list(user_chat_histories.get(phone, {}).get("messages", []))
 
+# ─── Contexto de vehículos entre turnos ───────────────────────────────────────
+def _etiqueta_vehiculo(v: dict) -> dict:
+    return {
+        "id": str(v.get("id", "")).strip(),
+        "nombre": f"{v.get('marca','')} {v.get('modelo','')} ({v.get('anio','')})".strip()
+    }
+
+def extraer_vehiculos_de_resultado(resultado) -> list:
+    """Saca (id, nombre) de lo que devolvió una tool, para recordarlos el próximo turno."""
+    if not isinstance(resultado, dict):
+        return []
+    encontrados = []
+    if resultado.get("encontrado") and resultado.get("id"):
+        encontrados.append(_etiqueta_vehiculo(resultado))
+    for v in resultado.get("vehiculos", []) or []:
+        if isinstance(v, dict) and v.get("id"):
+            encontrados.append(_etiqueta_vehiculo(v))
+    return [e for e in encontrados if e["id"]]
+
+def guardar_contexto_vehiculos(phone: str, vehiculos: list):
+    with _state_lock:
+        actuales = user_contexto_vehiculos.get(phone, {}).get("vehiculos", [])
+        # Los más recientes primero, sin duplicar ids
+        combinados, vistos = [], set()
+        for v in vehiculos + actuales:
+            if v["id"] not in vistos:
+                vistos.add(v["id"])
+                combinados.append(v)
+        user_contexto_vehiculos[phone] = {
+            "vehiculos": combinados[:MAX_CONTEXTO_VEHICULOS],
+            "updated_at": now_ts()
+        }
+
+def nota_contexto_vehiculos(phone: str) -> str:
+    """Recordatorio de los IDs ya mostrados, para que el modelo no invente uno."""
+    with _state_lock:
+        vehiculos = list(user_contexto_vehiculos.get(phone, {}).get("vehiculos", []))
+    if not vehiculos:
+        return ""
+    listado = "; ".join(f"ID {v['id']} = {v['nombre']}" for v in vehiculos)
+    return (
+        "VEHÍCULOS YA MOSTRADOS A ESTE CLIENTE (usá estos IDs exactos si se refiere a alguno; "
+        f"si no estás seguro de a cuál se refiere, preguntale): {listado}"
+    )
+
 # ─── Inventario (Google Sheets) ───────────────────────────────────────────────
 def refrescar_inventario():
     if not SHEET_URL:
@@ -421,6 +470,10 @@ def _cleanup_loop():
                 for p in [p for p, data in user_chat_histories.items()
                           if current - data.get("updated_at", 0) > USER_SESSION_TTL]:
                     user_chat_histories.pop(p, None)
+
+                for p in [p for p, data in user_contexto_vehiculos.items()
+                          if current - data.get("updated_at", 0) > USER_SESSION_TTL]:
+                    user_contexto_vehiculos.pop(p, None)
 
             logger.info("Cleanup ejecutado. Sesiones AI activas: %d", len(user_chat_histories))
         except Exception as e:
@@ -955,9 +1008,17 @@ SYSTEM_PROMPT_TEXT = (
     "otro carro y invitalo a contactar con un asesor para evaluar la propuesta. No prometas valores "
     "ni procesos específicos—eso lo maneja el equipo de ventas.\n"
 
-    "20. Para preguntas de CUOTAS: el sistema ya va a mandar el bloque con los montos exactos "
-    "calculados. No necesitás redactar cifras en tu respuesta a menos que también estés "
-    "respondiendo otra cosa en el mismo mensaje.\n"
+    "20. CIFRAS DE CUOTAS: el sistema agrega automáticamente al final de tu mensaje un bloque con "
+    "los montos exactos ya calculados. NUNCA escribas vos montos mensuales, recargos ni totales de "
+    "financiamiento: se duplicarían y podrías equivocarte. Solo presentá el contexto en una línea.\n"
+
+    "21. NO prometas acciones pendientes ('ahora te muestro', 'enseguida te calculo'). Si hace "
+    "falta otra herramienta, llamala en este mismo turno antes de responder. Todo lo que anuncies "
+    "tiene que estar ya resuelto en el mensaje que mandás.\n"
+
+    "22. Al referirte a un vehículo que ya mostraste en este chat, usá el ID exacto de la lista de "
+    "'VEHÍCULOS YA MOSTRADOS'. Jamás adivines un ID: si no estás seguro de a cuál se refiere el "
+    "cliente, preguntale cuál antes de calcular nada.\n"
 )
 
 # ─── Agente AI ────────────────────────────────────────────────────────────────
@@ -966,27 +1027,40 @@ def procesar_mensaje_con_agente(from_number: str, user_text_raw: str) -> dict:
         return {"texto": "Servicio temporalmente en mantenimiento.", "fotos": [], "enviar_ubicacion": False}
 
     historial = get_history(from_number)
-    messages = ([{"role": "system", "content": SYSTEM_PROMPT_TEXT}]
-                + historial
-                + [{"role": "user", "content": user_text_raw}])
+    messages = [{"role": "system", "content": SYSTEM_PROMPT_TEXT}]
+
+    nota_vehiculos = nota_contexto_vehiculos(from_number)
+    if nota_vehiculos:
+        messages.append({"role": "system", "content": nota_vehiculos})
+
+    messages += historial + [{"role": "user", "content": user_text_raw}]
     append_to_history(from_number, "user", user_text_raw)
 
     fotos_pendientes = []
     ubicacion_pedida = False
     tools_llamadas = []
     resultado_cuotas = None
+    vehiculos_mencionados = []
 
     try:
-        response = openai_client.chat.completions.create(
-            model="gpt-4o",
-            messages=messages,
-            tools=INVENTORY_TOOLS,
-            tool_choice="auto",
-            temperature=0.3
-        )
-        response_message = response.choices[0].message
+        # Bucle de herramientas: el modelo puede encadenar varias en el MISMO turno
+        # (ej. detalle_vehiculo y luego calcular_visa_cuotas). Antes solo se permitía
+        # una ronda, así que el bot prometía las cuotas y nunca las calculaba.
+        texto_final = ""
+        for _ in range(MAX_RONDAS_TOOLS):
+            response = openai_client.chat.completions.create(
+                model="gpt-4o",
+                messages=messages,
+                tools=INVENTORY_TOOLS,
+                tool_choice="auto",
+                temperature=0.3
+            )
+            response_message = response.choices[0].message
 
-        if response_message.tool_calls:
+            if not response_message.tool_calls:
+                texto_final = response_message.content
+                break
+
             messages.append(response_message)
 
             for tool_call in response_message.tool_calls:
@@ -1002,8 +1076,14 @@ def procesar_mensaje_con_agente(from_number: str, user_text_raw: str) -> dict:
                 resultado, fotos = despachar_tool(nombre, args, cliente=from_number)
                 fotos_pendientes.extend(fotos)
                 tools_llamadas.append(nombre)
+
                 if nombre == "calcular_visa_cuotas":
                     resultado_cuotas = resultado
+
+                # Guardamos qué vehículos se mostraron para que el PRÓXIMO turno
+                # conserve los IDs. Sin esto el modelo adivinaba un id al azar
+                # cuando el cliente respondía "gracias" o "¿y a cuántas cuotas?".
+                vehiculos_mencionados.extend(extraer_vehiculos_de_resultado(resultado))
 
                 messages.append({
                     "role": "tool",
@@ -1012,20 +1092,15 @@ def procesar_mensaje_con_agente(from_number: str, user_text_raw: str) -> dict:
                     "content": json.dumps(resultado, ensure_ascii=False)
                 })
 
-            # Si la ÚNICA herramienta llamada fue cuotas, no dejamos que el modelo
-            # redacte los números: los arma Python directo desde el cálculo, así
-            # nunca hay riesgo de que transcriba mal una cifra o un recargo.
-            if tools_llamadas == ["calcular_visa_cuotas"] and resultado_cuotas is not None:
-                texto_final = formatear_bloque_cuotas(resultado_cuotas)
-            else:
-                segunda = openai_client.chat.completions.create(
-                    model="gpt-4o",
-                    messages=messages,
-                    temperature=0.3
-                )
-                texto_final = segunda.choices[0].message.content
-        else:
-            texto_final = response_message.content
+        # Los montos de cuotas SIEMPRE los arma Python desde el cálculo real.
+        # El modelo nunca redacta cifras de financiamiento.
+        if resultado_cuotas is not None:
+            bloque = formatear_bloque_cuotas(resultado_cuotas)
+            texto_modelo = limpiar_markdown_whatsapp(texto_final or "").strip()
+            texto_final = f"{texto_modelo}\n\n{bloque}" if texto_modelo else bloque
+
+        if vehiculos_mencionados:
+            guardar_contexto_vehiculos(from_number, vehiculos_mencionados)
 
         texto_final = limpiar_markdown_whatsapp(texto_final or "") or "¿En qué más te puedo ayudar?"
         append_to_history(from_number, "assistant", texto_final)
