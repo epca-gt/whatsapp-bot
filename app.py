@@ -103,6 +103,22 @@ rate_limit_avisados  = {}
 user_contexto_vehiculos = {}   # phone -> {"vehiculos": [...], "updated_at": ts}
 
 stats = {"consultas_hoy": 0, "vehiculos_vistos": {}, "asesores_hoy": [], "fecha": None}
+actividad_reciente = []            # últimos eventos para el dashboard
+MAX_ACTIVIDAD = 50
+
+DASHBOARD_TOKEN = os.getenv("DASHBOARD_TOKEN", "")
+
+def registrar_actividad(tipo: str, detalle: str, telefono: str = ""):
+    """Log liviano en RAM para el dashboard. Enmascara el teléfono."""
+    tel = f"...{telefono[-4:]}" if telefono and len(telefono) >= 4 else ""
+    with _state_lock:
+        actividad_reciente.insert(0, {
+            "hora": datetime.now(GUATEMALA_TZ).strftime("%H:%M"),
+            "tipo": tipo,
+            "detalle": detalle,
+            "telefono": tel
+        })
+        del actividad_reciente[MAX_ACTIVIDAD:]
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
 def now_ts():
@@ -763,6 +779,12 @@ def ejecutar_tool_detalle(id=None, descripcion_vehiculo=None):
     logger.info("TOOL detalle -> id=%s %s %s disponible=%s",
                 carro.get("id"), carro.get("marca"), carro.get("modelo"), disponible)
 
+    nombre_carro = f"{carro.get('marca','')} {carro.get('modelo','')} ({carro.get('anio','')})"
+    with _state_lock:
+        clave = f"{carro.get('id')} | {nombre_carro}"
+        stats["vehiculos_vistos"][clave] = stats["vehiculos_vistos"].get(clave, 0) + 1
+    registrar_actividad("detalle", nombre_carro)
+
     foto_url = url_imagen_directa(carro.get("foto_principal"))
     fotos = []
     if foto_url:
@@ -876,6 +898,7 @@ def ejecutar_tool_visa_cuotas(id_vehiculo=None, monto=None, cuotas=None,
 
     logger.info("TOOL visa_cuotas -> base=%s contado=%s tarjeta=%s cuotas=%s",
                 base, contado, tarjeta, cuotas)
+    registrar_actividad("cuotas", referencia or formato_quetzales(base))
     return resultado, []
 
 def quitar_texto_de_cuotas(texto: str) -> str:
@@ -978,6 +1001,14 @@ def ejecutar_tool_asesor(cliente: str, resumen: str = ""):
     detalle_lead = resumen if resumen else "Cliente pidió hablar con un asesor"
     guardar_lead(cliente, detalle_lead, "solicita_asesor")
     logger.info("TOOL asesor -> cliente=%s resumen=%s", cliente, resumen or "(sin contexto)")
+    with _state_lock:
+        stats["asesores_hoy"].append({
+            "hora": datetime.now(GUATEMALA_TZ).strftime("%H:%M"),
+            "telefono": cliente,
+            "resumen": detalle_lead
+        })
+        del stats["asesores_hoy"][30:]
+    registrar_actividad("asesor", detalle_lead, cliente)
 
     return {
         "link_asesor": link,
@@ -1397,12 +1428,15 @@ def handle_text_message(from_number: str, user_text_raw: str):
         if stats["fecha"] != hoy_str():
             stats["fecha"] = hoy_str()
             stats["consultas_hoy"] = 0
+            stats["vehiculos_vistos"] = {}
+            stats["asesores_hoy"] = []
         stats["consultas_hoy"] += 1
         es_nuevo = from_number not in known_users
         known_users.add(from_number)
 
     if es_nuevo:
         guardar_lead(from_number, "Usuario Nuevo", "usuario_nuevo")
+        registrar_actividad("nuevo", "Cliente nuevo escribió", from_number)
 
     resultado = procesar_mensaje_con_agente(from_number, user_text_raw)
 
@@ -1527,6 +1561,98 @@ def debug_buscar():
         "modelo": carro.get("modelo"),
         "anio": carro.get("anio")
     }), 200
+
+@app.route("/admin-dashboard", methods=["GET"])
+def admin_dashboard():
+    """Panel del negocio: /admin-dashboard?token=EL_TOKEN (definido en Render)."""
+    if not DASHBOARD_TOKEN:
+        return "Dashboard deshabilitado: falta DASHBOARD_TOKEN en las variables de Render.", 503
+    if not hmac.compare_digest(request.args.get("token", ""), DASHBOARD_TOKEN):
+        return "Token inválido", 403
+
+    inv = obtener_inventario()
+    validos = [c for c in inv if str(c.get("marca") or "").strip()]
+    disponibles = [c for c in validos if esta_disponible(c)]
+    con_foto = [c for c in disponibles if url_imagen_directa(c.get("foto_principal"))]
+
+    with _state_lock:
+        consultas = stats["consultas_hoy"]
+        fecha = stats["fecha"] or hoy_str()
+        top_vistos = sorted(stats["vehiculos_vistos"].items(),
+                            key=lambda kv: kv[1], reverse=True)[:10]
+        asesores = list(stats["asesores_hoy"])[:15]
+        actividad = list(actividad_reciente)[:25]
+        sesiones = len(user_chat_histories)
+        usuarios = len(known_users)
+
+    def esc(t):
+        return (str(t).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"))
+
+    filas_vistos = "".join(
+        f"<tr><td>{esc(nombre)}</td><td class='num'>{n}</td></tr>"
+        for nombre, n in top_vistos
+    ) or "<tr><td colspan='2' class='vacio'>Sin consultas de detalle hoy</td></tr>"
+
+    filas_asesores = "".join(
+        f"<tr><td>{esc(a['hora'])}</td><td>...{esc(a['telefono'][-4:])}</td>"
+        f"<td>{esc(a['resumen'])}</td></tr>"
+        for a in asesores
+    ) or "<tr><td colspan='3' class='vacio'>Nadie pidió asesor hoy</td></tr>"
+
+    iconos = {"detalle": "🚗", "cuotas": "💳", "asesor": "🙋", "nuevo": "✨"}
+    filas_actividad = "".join(
+        f"<tr><td>{esc(ev['hora'])}</td><td>{iconos.get(ev['tipo'], '•')} "
+        f"{esc(ev['detalle'])} <span class='tel'>{esc(ev['telefono'])}</span></td></tr>"
+        for ev in actividad
+    ) or "<tr><td colspan='2' class='vacio'>Sin actividad aún</td></tr>"
+
+    html = f"""<!DOCTYPE html>
+<html lang="es"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="refresh" content="60">
+<title>Dashboard · Los Gemelos y Fer</title>
+<style>
+  body {{ font-family: -apple-system, Segoe UI, Roboto, sans-serif; background:#111; color:#eee;
+         margin:0; padding:16px; }}
+  h1 {{ font-size:1.2rem; margin:0 0 4px; }}
+  .sub {{ color:#888; font-size:.8rem; margin-bottom:16px; }}
+  .cards {{ display:grid; grid-template-columns:repeat(auto-fit,minmax(140px,1fr)); gap:10px;
+            margin-bottom:20px; }}
+  .card {{ background:#1c1c1e; border-radius:12px; padding:14px; }}
+  .card .valor {{ font-size:1.6rem; font-weight:700; }}
+  .card .label {{ color:#999; font-size:.75rem; margin-top:2px; }}
+  h2 {{ font-size:.95rem; margin:22px 0 8px; color:#ccc; }}
+  table {{ width:100%; border-collapse:collapse; background:#1c1c1e; border-radius:12px;
+           overflow:hidden; font-size:.85rem; }}
+  td {{ padding:8px 10px; border-bottom:1px solid #2a2a2c; vertical-align:top; }}
+  tr:last-child td {{ border-bottom:none; }}
+  .num {{ text-align:right; font-weight:700; width:3em; }}
+  .vacio {{ color:#777; font-style:italic; }}
+  .tel {{ color:#888; font-size:.75rem; }}
+</style></head><body>
+<h1>📊 Los Gemelos y Fer — Panel del bot</h1>
+<div class="sub">{fecha} · se actualiza solo cada 60 s</div>
+
+<div class="cards">
+  <div class="card"><div class="valor">{consultas}</div><div class="label">Consultas hoy</div></div>
+  <div class="card"><div class="valor">{len(asesores)}</div><div class="label">Pidieron asesor hoy</div></div>
+  <div class="card"><div class="valor">{usuarios}</div><div class="label">Clientes desde el arranque</div></div>
+  <div class="card"><div class="valor">{sesiones}</div><div class="label">Chats activos ahora</div></div>
+  <div class="card"><div class="valor">{len(disponibles)}</div><div class="label">Vehículos disponibles</div></div>
+  <div class="card"><div class="valor">{len(con_foto)}</div><div class="label">Con foto válida</div></div>
+</div>
+
+<h2>🔥 Carros más consultados hoy</h2>
+<table>{filas_vistos}</table>
+
+<h2>🙋 Solicitudes de asesor hoy</h2>
+<table>{filas_asesores}</table>
+
+<h2>🕐 Actividad reciente</h2>
+<table>{filas_actividad}</table>
+</body></html>"""
+    return html, 200, {"Content-Type": "text/html; charset=utf-8"}
 
 @app.route("/webhook", methods=["GET"])
 def verify_webhook():
