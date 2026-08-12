@@ -108,6 +108,32 @@ MAX_ACTIVIDAD = 50
 
 DASHBOARD_TOKEN = os.getenv("DASHBOARD_TOKEN", "")
 
+codigos_recibidos = []             # códigos de verificación que llegan al número del bot
+MAX_CODIGOS = 15
+
+PATRON_CODIGO = re.compile(r"\b(\d{3}[- ]\d{3}|\d{4,8})\b")
+PALABRAS_CODIGO = ("codigo", "code", "verif", "otp", "pin", "clave", "token",
+                   "confirmation", "confirmacion", "security", "seguridad")
+
+def detectar_codigo_verificacion(texto: str):
+    """
+    Detecta mensajes de verificación que llegan al número del bot (Facebook,
+    Meta, bancos, etc.). Devuelve el código si lo es, None si es un mensaje normal.
+    Criterio: contiene una palabra típica de verificación Y un grupo de dígitos,
+    o tiene el formato clásico 123-456.
+    """
+    if not texto:
+        return None
+    bajo = normalize_text(texto)
+    m = PATRON_CODIGO.search(texto)
+    if not m:
+        return None
+    if re.search(r"\b\d{3}[- ]\d{3}\b", texto):
+        return m.group(1)
+    if any(p in bajo for p in PALABRAS_CODIGO):
+        return m.group(1)
+    return None
+
 def registrar_actividad(tipo: str, detalle: str, telefono: str = ""):
     """Log liviano en RAM para el dashboard. Enmascara el teléfono."""
     tel = f"...{telefono[-4:]}" if telefono and len(telefono) >= 4 else ""
@@ -1399,6 +1425,32 @@ def build_advisor_link():
 def handle_text_message(from_number: str, user_text_raw: str):
     user_text = normalize_text(user_text_raw)
 
+    # Códigos de verificación que llegan al número del bot (Facebook, Meta, bancos...):
+    # como este número no tiene app de WhatsApp, el admin no los vería jamás.
+    # Se capturan, se reenvían al admin y NO se procesan con la IA.
+    if from_number != ADMIN_PHONE:
+        codigo = detectar_codigo_verificacion(user_text_raw)
+        if codigo:
+            with _state_lock:
+                codigos_recibidos.insert(0, {
+                    "hora": datetime.now(GUATEMALA_TZ).strftime("%d/%m %H:%M"),
+                    "remitente": from_number,
+                    "codigo": codigo,
+                    "mensaje": user_text_raw[:200]
+                })
+                del codigos_recibidos[MAX_CODIGOS:]
+            registrar_actividad("codigo", f"Código {codigo} recibido", from_number)
+            guardar_lead(from_number, f"CÓDIGO DE VERIFICACIÓN: {codigo} | Mensaje: {user_text_raw[:150]}",
+                         "codigo_verificacion")
+            send_whatsapp_message(ADMIN_PHONE, (
+                f"🔐 *Código recibido en el número del bot*\n\n"
+                f"Código: *{codigo}*\n"
+                f"De: {from_number}\n\n"
+                f"Mensaje original:\n{user_text_raw[:500]}"
+            ))
+            logger.info("CODIGO de verificación capturado de %s", from_number)
+            return
+
     if user_text == "adminstats" and from_number == ADMIN_PHONE:
         inv = obtener_inventario()
         disponibles = [c for c in inv if str(c.get("marca") or "").strip() and esta_disponible(c)]
@@ -1582,6 +1634,7 @@ def admin_dashboard():
                             key=lambda kv: kv[1], reverse=True)[:10]
         asesores = list(stats["asesores_hoy"])[:15]
         actividad = list(actividad_reciente)[:25]
+        codigos = list(codigos_recibidos)
         sesiones = len(user_chat_histories)
         usuarios = len(known_users)
 
@@ -1599,12 +1652,18 @@ def admin_dashboard():
         for a in asesores
     ) or "<tr><td colspan='3' class='vacio'>Nadie pidió asesor hoy</td></tr>"
 
-    iconos = {"detalle": "🚗", "cuotas": "💳", "asesor": "🙋", "nuevo": "✨"}
+    iconos = {"detalle": "🚗", "cuotas": "💳", "asesor": "🙋", "nuevo": "✨", "codigo": "🔐"}
     filas_actividad = "".join(
         f"<tr><td>{esc(ev['hora'])}</td><td>{iconos.get(ev['tipo'], '•')} "
         f"{esc(ev['detalle'])} <span class='tel'>{esc(ev['telefono'])}</span></td></tr>"
         for ev in actividad
     ) or "<tr><td colspan='2' class='vacio'>Sin actividad aún</td></tr>"
+
+    filas_codigos = "".join(
+        f"<tr><td>{esc(c['hora'])}</td><td class='codigo'>{esc(c['codigo'])}</td>"
+        f"<td>{esc(c['remitente'])}</td><td>{esc(c['mensaje'])}</td></tr>"
+        for c in codigos
+    ) or "<tr><td colspan='4' class='vacio'>Sin códigos recibidos (se borran al reiniciar el servicio)</td></tr>"
 
     html = f"""<!DOCTYPE html>
 <html lang="es"><head>
@@ -1630,6 +1689,7 @@ def admin_dashboard():
   .num {{ text-align:right; font-weight:700; width:3em; }}
   .vacio {{ color:#777; font-style:italic; }}
   .tel {{ color:#888; font-size:.75rem; }}
+  .codigo {{ font-family:monospace; font-size:1.05rem; font-weight:700; color:#ffd479; }}
 </style></head><body>
 <h1>📊 Los Gemelos y Fer — Panel del bot</h1>
 <div class="sub">{fecha} · se actualiza solo cada 60 s</div>
@@ -1642,6 +1702,9 @@ def admin_dashboard():
   <div class="card"><div class="valor">{len(disponibles)}</div><div class="label">Vehículos disponibles</div></div>
   <div class="card"><div class="valor">{len(con_foto)}</div><div class="label">Con foto válida</div></div>
 </div>
+
+<h2>🔐 Códigos de verificación recibidos</h2>
+<table>{filas_codigos}</table>
 
 <h2>🔥 Carros más consultados hoy</h2>
 <table>{filas_vistos}</table>
