@@ -314,6 +314,9 @@ def extraer_vehiculos_de_resultado(resultado) -> list:
     for v in resultado.get("vehiculos", []) or []:
         if isinstance(v, dict) and v.get("id"):
             encontrados.append(_etiqueta_vehiculo(v))
+    for v in resultado.get("opciones", []) or []:
+        if isinstance(v, dict) and v.get("id"):
+            encontrados.append(_etiqueta_vehiculo(v))
     return [e for e in encontrados if e["id"]]
 
 def guardar_contexto_vehiculos(phone: str, vehiculos: list):
@@ -398,6 +401,48 @@ def buscar_carro_por_id(vehicle_id: str):
         if normalize_text(str(carro.get("id", ""))) == objetivo:
             return carro
     return None
+
+def buscar_carros_por_texto_todos(texto: str) -> list:
+    """
+    Devuelve TODOS los carros que coinciden con el texto, no solo el primero.
+    Sirve para detectar ambigüedad: 'civic' con dos Civics en inventario
+    debe listar ambos, no elegir uno al azar.
+    """
+    carros = obtener_inventario()
+    consulta = normalize_text(texto)
+    consulta_compacta = normalize_match(texto)
+    if not consulta_compacta:
+        return []
+
+    exactos = []
+    for carro in carros:
+        etiqueta_compacta = normalize_match(
+            f"{carro.get('marca','')} {carro.get('modelo','')} {carro.get('anio','')}"
+        )
+        if not etiqueta_compacta:
+            continue
+        if consulta_compacta in etiqueta_compacta or etiqueta_compacta in consulta_compacta:
+            exactos.append(carro)
+    if exactos:
+        return exactos
+
+    palabras = [normalize_match(p) for p in consulta.split() if len(p) > 2]
+    palabras = [p for p in palabras if p]
+    if not palabras:
+        return []
+
+    puntuados = []
+    for carro in carros:
+        etiqueta = normalize_match(f"{carro.get('marca','')} {carro.get('modelo','')}")
+        if not etiqueta:
+            continue
+        score = sum(1 for p in palabras if p in etiqueta)
+        if score >= 1:
+            puntuados.append((score, carro))
+    if not puntuados:
+        return []
+    mejor = max(s for s, _ in puntuados)
+    return [c for s, c in puntuados if s == mejor]
 
 def buscar_carro_por_texto(texto: str):
     """
@@ -669,7 +714,11 @@ def ejecutar_tool_inventario(marca=None, modelo=None, precio_max=None, anio=None
     return {
         "total_inventario": len(carros),
         "coincidencias": len(resultados),
-        "nota": "Extras resumidos. Para la ficha completa usá detalle_vehiculo con el id.",
+        "nota": (
+            f"Se encontraron {len(resultados)} vehículos con esos filtros. Decile SIEMPRE al "
+            "cliente esta cantidad ('tenemos N disponibles...'). Extras resumidos: para la ficha "
+            "completa usá detalle_vehiculo con el id."
+        ),
         "vehiculos": resultados[:MAX_RESULTADOS_LISTA]
     }, fotos_validas
 
@@ -677,8 +726,34 @@ def ejecutar_tool_detalle(id=None, descripcion_vehiculo=None):
     carro = None
     if id:
         carro = buscar_carro_por_id(id)
+
     if not carro and descripcion_vehiculo:
-        carro = buscar_carro_por_texto(descripcion_vehiculo)
+        coincidencias = [c for c in buscar_carros_por_texto_todos(descripcion_vehiculo)
+                         if esta_disponible(c)]
+        if len(coincidencias) == 1:
+            carro = coincidencias[0]
+        elif len(coincidencias) > 1:
+            # Ambigüedad: hay varios carros que responden a ese nombre.
+            # Devolvemos TODOS para que el modelo los liste, jamás uno al azar.
+            logger.info("TOOL detalle -> AMBIGUO '%s': %d coincidencias",
+                        descripcion_vehiculo, len(coincidencias))
+            return {
+                "encontrado": False,
+                "multiples_coincidencias": True,
+                "cantidad": len(coincidencias),
+                "opciones": [{
+                    "id":     c.get("id"),
+                    "marca":  c.get("marca"),
+                    "modelo": c.get("modelo"),
+                    "anio":   c.get("anio"),
+                    "precio": c.get("precio"),
+                } for c in coincidencias],
+                "nota": (
+                    f"Hay {len(coincidencias)} vehículos que coinciden con "
+                    f"'{descripcion_vehiculo}'. Decile al cliente la CANTIDAD y mostrale "
+                    "todos en formato de lista para que elija. NO des el detalle de uno solo."
+                )
+            }, []
 
     if not carro:
         logger.info("TOOL detalle -> NO encontrado (id=%s texto=%s)", id, descripcion_vehiculo)
@@ -953,11 +1028,18 @@ SYSTEM_PROMPT_TEXT = (
     "1. Sé amable, persuasivo y conciso. Usa emojis sutilmente.\n"
 
     "2. Usá 'consultar_inventario' para buscar o listar autos (marcas, modelos, precios, "
-    "presupuesto, disponibilidad general).\n"
+    "presupuesto, disponibilidad general). Si el cliente menciona una marca o modelo SIN "
+    "identificar una unidad única (ej: 'busco honda civic', 'tenés corollas'), es una BÚSQUEDA: "
+    "usá consultar_inventario con el filtro, porque puede haber varias unidades de ese modelo.\n"
 
-    "3. Usá 'detalle_vehiculo' cuando pregunten por UN auto específico: equipamiento, qué trae, "
-    "motor, millaje, transmisión o color. Pasá el id si lo conocés; si no, marca y modelo en "
-    "'descripcion_vehiculo'.\n"
+    "2b. CANTIDADES: al responder una búsqueda por marca o modelo, decí SIEMPRE cuántas unidades "
+    "hay ('Tenemos 2 Honda Civic disponibles:'). El dato viene en 'coincidencias'.\n"
+
+    "3. Usá 'detalle_vehiculo' SOLO cuando el cliente ya identificó UNA unidad específica (por ID, "
+    "o porque solo hay una posible) y quiere su ficha: equipamiento, qué trae, motor, millaje, "
+    "transmisión o color. Pasá el id si lo conocés; si no, marca y modelo en 'descripcion_vehiculo'. "
+    "Si la herramienta responde 'multiples_coincidencias', mostrá TODAS las opciones con su "
+    "cantidad y pedile al cliente que elija; jamás des el detalle de una sola.\n"
 
     "4. Usá 'calcular_visa_cuotas' para TODA pregunta de cuotas, mensualidades, financiamiento o "
     "pagos mixtos. Jamás calcules montos, recargos ni divisiones de cabeza.\n"
