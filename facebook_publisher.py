@@ -46,6 +46,44 @@ log = logging.getLogger(__name__)
 GRAPH_VERSION = "v20.0"
 GRAPH_BASE = f"https://graph.facebook.com/{GRAPH_VERSION}"
 
+# Cache del token de pagina (se obtiene una vez por proceso)
+_page_token_cache = {"token": None}
+
+
+def _obtener_page_token():
+    """
+    Devuelve el token DE PAGINA, que es el que Facebook exige para
+    crear borradores ("posted to a page as the page itself").
+
+    El token en FB_PAGE_TOKEN puede ser:
+      a) Ya un token de pagina -> el intercambio devuelve el mismo, sin problema.
+      b) Un token de usuario del sistema -> el intercambio devuelve el de pagina.
+    En ambos casos esta funcion resuelve el correcto.
+    """
+    if _page_token_cache["token"]:
+        return _page_token_cache["token"]
+
+    page_id = os.environ["FB_PAGE_ID"]
+    token_env = os.environ["FB_PAGE_TOKEN"]
+
+    resp = requests.get(
+        f"{GRAPH_BASE}/{page_id}",
+        params={"fields": "access_token", "access_token": token_env},
+        timeout=30,
+    )
+
+    if resp.status_code == 200 and "access_token" in resp.json():
+        _page_token_cache["token"] = resp.json()["access_token"]
+    else:
+        # Si el intercambio falla, usar el token tal cual (puede que ya sea de pagina)
+        log.warning(
+            "No se pudo intercambiar el token por el de pagina (%s). Se usa el de la env var.",
+            resp.text[:200],
+        )
+        _page_token_cache["token"] = token_env
+
+    return _page_token_cache["token"]
+
 # Cuantos vehiculos se publican por corrida
 VEHICULOS_POR_CORRIDA = 6
 
@@ -325,7 +363,7 @@ def _subir_foto_sin_publicar(url_foto):
     Lanza RuntimeError con el detalle exacto que devuelve Facebook si falla.
     """
     page_id = os.environ["FB_PAGE_ID"]
-    token = os.environ["FB_PAGE_TOKEN"]
+    token = _obtener_page_token()
 
     resp = requests.post(
         f"{GRAPH_BASE}/{page_id}/photos",
@@ -355,7 +393,7 @@ def crear_borrador(vehiculo):
     Devuelve un dict con el resultado.
     """
     page_id = os.environ["FB_PAGE_ID"]
-    token = os.environ["FB_PAGE_TOKEN"]
+    token = _obtener_page_token()
 
     caption = generar_caption(vehiculo)
     fotos = obtener_fotos(vehiculo)
