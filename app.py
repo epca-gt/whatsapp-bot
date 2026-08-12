@@ -1,4 +1,5 @@
 from flask import Flask, request, jsonify
+from facebook_publisher import registrar_rutas
 import requests
 import os
 import json
@@ -22,6 +23,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
+registrar_rutas(app)
 
 # ─── Variables de entorno ─────────────────────────────────────────────────────
 VERIFY_TOKEN      = os.getenv("VERIFY_TOKEN")
