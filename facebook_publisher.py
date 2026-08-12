@@ -322,6 +322,7 @@ def _subir_foto_sin_publicar(url_foto):
     """
     Sube una foto a la pagina SIN publicarla y devuelve su ID,
     para poder adjuntarla despues a un post multi-foto.
+    Lanza RuntimeError con el detalle exacto que devuelve Facebook si falla.
     """
     page_id = os.environ["FB_PAGE_ID"]
     token = os.environ["FB_PAGE_TOKEN"]
@@ -335,8 +336,17 @@ def _subir_foto_sin_publicar(url_foto):
         },
         timeout=60,
     )
-    resp.raise_for_status()
-    return resp.json()["id"]
+
+    if resp.status_code != 200:
+        raise RuntimeError(
+            f"Facebook respondio {resp.status_code} para '{url_foto}': {resp.text[:500]}"
+        )
+
+    data = resp.json()
+    if "id" not in data:
+        raise RuntimeError(f"Respuesta sin 'id' para '{url_foto}': {resp.text[:500]}")
+
+    return data["id"]
 
 
 def crear_borrador(vehiculo):
@@ -359,17 +369,20 @@ def crear_borrador(vehiculo):
 
     # Subir cada foto sin publicar
     media_ids = []
+    errores_fotos = []
     for url in fotos:
         try:
             media_ids.append(_subir_foto_sin_publicar(url))
         except Exception as e:
             log.warning("Fallo al subir foto %s: %s", url, e)
+            errores_fotos.append({"url": url, "error": str(e)})
 
     if not media_ids:
         return {
             "id": vehiculo.get("id"),
             "ok": False,
             "error": "Ninguna foto se pudo subir a Facebook",
+            "detalle_errores": errores_fotos,
         }
 
     # Crear el post como BORRADOR con todas las fotos adjuntas
@@ -490,6 +503,20 @@ def registrar_rutas(app):
         except Exception as e:
             log.exception("Error generando borradores")
             return jsonify({"ok": False, "error": str(e)}), 500
+
+    @app.route("/debug-foto")
+    def _debug_foto():
+        """Prueba subir UNA foto sola y muestra el error exacto de Facebook."""
+        if not _token_valido():
+            return jsonify({"error": "no autorizado"}), 403
+        url_foto = request.args.get("url", "").strip()
+        if not url_foto:
+            return jsonify({"error": "falta el parametro ?url="}), 400
+        try:
+            media_id = _subir_foto_sin_publicar(url_foto)
+            return jsonify({"ok": True, "media_id": media_id, "url": url_foto})
+        except Exception as e:
+            return jsonify({"ok": False, "url": url_foto, "error": str(e)}), 200
 
     @app.route("/debug-facebook")
     def _debug_facebook():
