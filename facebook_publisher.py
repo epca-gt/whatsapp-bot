@@ -96,8 +96,15 @@ VEHICULOS_POR_CORRIDA = 6
 # adelantar o eliminar antes de que salgan.
 HORAS_VENTANA_REVISION = 6
 
-# Facebook maneja hasta 10 fotos de forma confiable en attached_media
-MAX_FOTOS_POR_POST = 10
+# Tope de fotos por post. Facebook acepta bastantes en attached_media, pero
+# el limite exacto no esta documentado y cambia. Se intenta con todas las que
+# haya en la carpeta (hasta este tope) y, si Facebook rechaza el post por
+# exceso, se reintenta automaticamente con menos (ver REINTENTOS_FOTOS).
+MAX_FOTOS_POR_POST = 30
+
+# Cantidades a las que se baja si Facebook rechaza el post por tener
+# demasiadas fotos adjuntas.
+REINTENTOS_FOTOS = [20, 10]
 
 # Estados del Sheet que ocultan un vehiculo (mismos que usa el bot)
 ESTADOS_OCULTOS = {
@@ -241,10 +248,21 @@ def _formatear_precio(valor):
 
 
 def _formatear_millaje(valor):
-    limpio = str(valor).replace(",", "").replace(" ", "").strip()
-    limpio = limpio.lower().replace("km", "").replace("millas", "").strip()
+    """
+    Formatea el millaje como millas (los vehiculos importados de USA
+    traen su odometro en millas). '62000' -> '62,000 millas'.
+    Si el valor ya trae unidad escrita (km o millas), se respeta la que traiga.
+    """
+    original = str(valor).strip().lower()
+    unidad = "millas"
+    if "km" in original or "kilometro" in original or "kilómetro" in original:
+        unidad = "km"
+
+    limpio = (original.replace(",", "").replace("km", "")
+              .replace("kilometros", "").replace("kilómetros", "")
+              .replace("millas", "").replace("mi", "").strip())
     try:
-        return f"{int(float(limpio)):,} km"
+        return f"{int(float(limpio)):,} {unidad}"
     except (ValueError, TypeError):
         return str(valor).strip()
 
@@ -322,8 +340,8 @@ def _extraer_folder_id(link):
 
 def obtener_fotos(vehiculo, limite=MAX_FOTOS_POR_POST):
     """
-    Lista las imagenes publicas de la carpeta de Drive del vehiculo y
-    devuelve URLs servidas por el CDN de Google (mismo patron que el bot).
+    Lista TODAS las imagenes de la carpeta de Drive del vehiculo (hasta
+    `limite`) y devuelve URLs servidas por el CDN de Google.
     Si no hay carpeta, cae de vuelta a foto_principal.
     """
     folder_id = _extraer_folder_id(vehiculo.get("link_fotos", ""))
@@ -332,20 +350,27 @@ def obtener_fotos(vehiculo, limite=MAX_FOTOS_POR_POST):
         principal = vehiculo.get("foto_principal", "").strip()
         return [principal] if principal else []
 
+    archivos = []
     try:
         svc = _drive_service()
-        resultado = svc.files().list(
-            q=f"'{folder_id}' in parents and mimeType contains 'image/' and trashed=false",
-            fields="files(id, name, mimeType)",
-            orderBy="name",
-            pageSize=limite,
-        ).execute()
+        page_token = None
+        # Paginar hasta juntar todas las imagenes de la carpeta
+        while len(archivos) < limite:
+            resultado = svc.files().list(
+                q=f"'{folder_id}' in parents and mimeType contains 'image/' and trashed=false",
+                fields="nextPageToken, files(id, name, mimeType)",
+                orderBy="name",
+                pageSize=min(100, limite - len(archivos)),
+                pageToken=page_token,
+            ).execute()
+            archivos.extend(resultado.get("files", []))
+            page_token = resultado.get("nextPageToken")
+            if not page_token:
+                break
     except Exception as e:
         log.warning("No se pudo listar la carpeta %s: %s", folder_id, e)
         principal = vehiculo.get("foto_principal", "").strip()
         return [principal] if principal else []
-
-    archivos = resultado.get("files", [])
 
     urls = []
     for archivo in archivos:
@@ -440,34 +465,57 @@ def crear_borrador(vehiculo):
         (datetime.now(timezone.utc) + timedelta(hours=HORAS_VENTANA_REVISION)).timestamp()
     )
 
-    payload = {
-        "message": caption,
-        "published": "false",
-        "scheduled_publish_time": publicar_en,
-        "access_token": token,
-    }
-    for i, media_id in enumerate(media_ids):
-        payload[f"attached_media[{i}]"] = json.dumps({"media_fbid": media_id})
+    def _intentar_post(ids_a_usar):
+        """Arma y envia el post con la cantidad de fotos indicada."""
+        payload = {
+            "message": caption,
+            "published": "false",
+            "scheduled_publish_time": publicar_en,
+            "access_token": token,
+        }
+        for i, media_id in enumerate(ids_a_usar):
+            payload[f"attached_media[{i}]"] = json.dumps({"media_fbid": media_id})
+        return requests.post(f"{GRAPH_BASE}/{page_id}/feed", data=payload, timeout=90)
 
-    resp = requests.post(f"{GRAPH_BASE}/{page_id}/feed", data=payload, timeout=60)
+    # Intentar con todas las fotos y, si Facebook rechaza, bajar la cantidad
+    intentos = [len(media_ids)] + [n for n in REINTENTOS_FOTOS if n < len(media_ids)]
+    resp = None
+    usadas = len(media_ids)
 
-    if resp.status_code != 200:
+    for cantidad_fotos in intentos:
+        resp = _intentar_post(media_ids[:cantidad_fotos])
+        if resp.status_code == 200:
+            usadas = cantidad_fotos
+            break
+        log.warning(
+            "Post del vehiculo %s fallo con %s fotos: %s",
+            vehiculo.get("id"), cantidad_fotos, resp.text[:200],
+        )
+
+    if resp is None or resp.status_code != 200:
         return {
             "id": vehiculo.get("id"),
             "ok": False,
             "error": f"Facebook respondio {resp.status_code}: {resp.text[:300]}",
+            "fotos_intentadas": intentos,
         }
 
     hora_local = datetime.fromtimestamp(publicar_en, TZ_GT).strftime("%Y-%m-%d %H:%M")
 
-    return {
+    resultado = {
         "id": vehiculo.get("id"),
         "ok": True,
         "post_id": resp.json().get("id"),
-        "fotos": len(media_ids),
+        "fotos": usadas,
         "programado_para": f"{hora_local} (hora Guatemala)",
         "_fila": vehiculo["_fila"],
     }
+    if usadas < len(media_ids):
+        resultado["aviso"] = (
+            f"Se subieron {len(media_ids)} fotos pero Facebook solo acepto {usadas} "
+            "en el post."
+        )
+    return resultado
 
 
 # --------------------------------------------------------------------------
