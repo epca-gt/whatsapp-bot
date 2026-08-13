@@ -623,6 +623,76 @@ def registrar_rutas(app):
                 "resultado": _estado_corrida["resultado"],
             })
 
+    @app.route("/reparar-facebook")
+    def _reparar_facebook():
+        """
+        Corrige posts atascados por el bug conocido de Facebook con posts
+        programados via API: quedan con is_hidden=true / is_published=false
+        aunque ya deberian estar publicados y visibles en el muro.
+        Los detecta y los fuerza a visible.
+        """
+        if not _token_valido():
+            return jsonify({"error": "no autorizado"}), 403
+
+        page_id = os.environ["FB_PAGE_ID"]
+        token = _obtener_page_token()
+
+        # Traer el feed completo (incluye publicados y no publicados)
+        resp = requests.get(
+            f"{GRAPH_BASE}/{page_id}/feed",
+            params={
+                "fields": "id,message,is_published,is_hidden,scheduled_publish_time,created_time",
+                "limit": 50,
+                "access_token": token,
+            },
+            timeout=30,
+        )
+        if resp.status_code != 200:
+            return jsonify({"ok": False, "error": resp.text[:500]}), 500
+
+        posts = resp.json().get("data", [])
+        ahora = int(datetime.now(timezone.utc).timestamp())
+        reparados, revisados = [], []
+
+        for post in posts:
+            oculto = post.get("is_hidden", False)
+            publicado = post.get("is_published", True)
+            programado_ts = post.get("scheduled_publish_time")
+
+            # Un post esta "atascado" si esta oculto/no publicado y su hora
+            # programada ya paso (o si fue publicado a mano y sigue oculto)
+            atascado = (oculto or not publicado) and (
+                programado_ts is None or int(programado_ts) <= ahora
+            )
+
+            revisados.append({
+                "post_id": post["id"],
+                "resumen": (post.get("message") or "")[:60],
+                "is_published": publicado,
+                "is_hidden": oculto,
+                "atascado": atascado,
+            })
+
+            if atascado:
+                fix = requests.post(
+                    f"{GRAPH_BASE}/{post['id']}",
+                    data={"is_hidden": "false", "access_token": token},
+                    timeout=30,
+                )
+                reparados.append({
+                    "post_id": post["id"],
+                    "ok": fix.status_code == 200,
+                    "respuesta": fix.text[:200] if fix.status_code != 200 else "reparado",
+                })
+
+        return jsonify({
+            "ok": True,
+            "posts_revisados": len(revisados),
+            "posts_reparados": len(reparados),
+            "detalle_reparados": reparados,
+            "detalle_revisados": revisados,
+        })
+
     @app.route("/debug-foto")
     def _debug_foto():
         """Prueba subir UNA foto sola y muestra el error exacto de Facebook."""
