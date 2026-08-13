@@ -33,6 +33,7 @@ DEPENDENCIAS (agregar a requirements.txt):
 import os
 import json
 import logging
+import threading
 from datetime import datetime, timezone, timedelta
 
 import requests
@@ -529,6 +530,33 @@ def generar_borradores(cantidad=VEHICULOS_POR_CORRIDA, dry_run=False):
 
 
 # --------------------------------------------------------------------------
+# ESTADO DE LA ULTIMA CORRIDA (en RAM, mismo tradeoff que el resto del bot)
+# --------------------------------------------------------------------------
+
+_estado_corrida = {
+    "en_progreso": False,
+    "inicio": None,
+    "fin": None,
+    "resultado": None,
+}
+_lock_corrida = threading.Lock()
+
+
+def _correr_en_segundo_plano(cantidad):
+    """Ejecuta generar_borradores() en un hilo, guardando el resultado en RAM."""
+    global _estado_corrida
+    try:
+        resultado = generar_borradores(cantidad=cantidad)
+    except Exception as e:
+        log.exception("Error en la corrida en segundo plano")
+        resultado = {"ok": False, "error": str(e)}
+    with _lock_corrida:
+        _estado_corrida["en_progreso"] = False
+        _estado_corrida["fin"] = datetime.now(TZ_GT).strftime("%Y-%m-%d %H:%M:%S")
+        _estado_corrida["resultado"] = resultado
+
+
+# --------------------------------------------------------------------------
 # ENDPOINTS FLASK (registrar en la app existente)
 # --------------------------------------------------------------------------
 
@@ -548,18 +576,52 @@ def registrar_rutas(app):
 
     @app.route("/publicar-facebook")
     def _publicar_facebook():
-        """Endpoint que dispara UptimeRobot una vez al dia."""
+        """
+        Dispara la publicacion EN SEGUNDO PLANO y responde de inmediato,
+        para no chocar con el timeout de gunicorn en Render.
+        El progreso se consulta en /publicar-facebook-estado.
+        """
         if not _token_valido():
             return jsonify({"error": "no autorizado"}), 403
         try:
             cantidad = int(request.args.get("cantidad", VEHICULOS_POR_CORRIDA))
         except ValueError:
             cantidad = VEHICULOS_POR_CORRIDA
-        try:
-            return jsonify(generar_borradores(cantidad=cantidad))
-        except Exception as e:
-            log.exception("Error generando borradores")
-            return jsonify({"ok": False, "error": str(e)}), 500
+
+        with _lock_corrida:
+            if _estado_corrida["en_progreso"]:
+                return jsonify({
+                    "ok": False,
+                    "mensaje": "Ya hay una corrida en progreso. Consulta /publicar-facebook-estado.",
+                    "inicio": _estado_corrida["inicio"],
+                }), 409
+            _estado_corrida["en_progreso"] = True
+            _estado_corrida["inicio"] = datetime.now(TZ_GT).strftime("%Y-%m-%d %H:%M:%S")
+            _estado_corrida["fin"] = None
+            _estado_corrida["resultado"] = None
+
+        hilo = threading.Thread(target=_correr_en_segundo_plano, args=(cantidad,), daemon=True)
+        hilo.start()
+
+        return jsonify({
+            "ok": True,
+            "mensaje": f"Publicacion de {cantidad} vehiculo(s) iniciada en segundo plano. "
+                       "Consulta el avance en /publicar-facebook-estado con el mismo token.",
+            "inicio": _estado_corrida["inicio"],
+        })
+
+    @app.route("/publicar-facebook-estado")
+    def _publicar_facebook_estado():
+        """Muestra el estado/resultado de la ultima corrida."""
+        if not _token_valido():
+            return jsonify({"error": "no autorizado"}), 403
+        with _lock_corrida:
+            return jsonify({
+                "en_progreso": _estado_corrida["en_progreso"],
+                "inicio": _estado_corrida["inicio"],
+                "fin": _estado_corrida["fin"],
+                "resultado": _estado_corrida["resultado"],
+            })
 
     @app.route("/debug-foto")
     def _debug_foto():
