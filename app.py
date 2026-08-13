@@ -15,7 +15,7 @@ from urllib.parse import quote
 import logging
 from openai import OpenAI
 from collage_generator import registrar_rutas_collage
-registrar_rutas_collage(app)
+
 
 # ─── Logging ──────────────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -26,6 +26,7 @@ logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 registrar_rutas(app)
+registrar_rutas_collage(app)
 
 # ─── Variables de entorno ─────────────────────────────────────────────────────
 VERIFY_TOKEN      = os.getenv("VERIFY_TOKEN")
