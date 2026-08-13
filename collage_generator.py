@@ -66,8 +66,8 @@ VEHICULOS_POR_COLLAGE = 4
 PROMO_TEXTO = "Menciónanos que vienes de Facebook y el traspaso va GRATIS"
 
 BENEFICIOS = [
-    "Garantía en todos nuestros vehículos",
-    "Escáner profesional GRATIS en tu compra",
+    "Garantía por escrito en todos nuestros vehículos",
+    "Escaneo profesional GRATIS en tu compra",
 ]
 
 # Datos de contacto
