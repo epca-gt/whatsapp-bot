@@ -726,6 +726,69 @@ def registrar_rutas(app):
             "detalle_revisados": revisados,
         })
 
+    @app.route("/privacidad")
+    def _politica_privacidad():
+        """Politica de privacidad publica (requisito de Meta para publicar la app)."""
+        html = """<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Política de Privacidad — Importadora Los Gemelos y Fer</title>
+<style>
+  body { font-family: Arial, Helvetica, sans-serif; max-width: 720px;
+         margin: 40px auto; padding: 0 20px; line-height: 1.6; color: #222; }
+  h1 { font-size: 1.6em; } h2 { font-size: 1.2em; margin-top: 1.5em; }
+  footer { margin-top: 3em; font-size: 0.85em; color: #666; }
+</style>
+</head>
+<body>
+<h1>Política de Privacidad</h1>
+<p><strong>Importadora Los Gemelos y Fer</strong><br>
+35 Avenida 16-33 Zona 7, Villa Linda 2, Ciudad de Guatemala<br>
+Última actualización: Agosto 2026</p>
+
+<h2>1. Alcance</h2>
+<p>Esta política aplica a las aplicaciones y servicios digitales operados por
+Importadora Los Gemelos y Fer, incluyendo nuestra aplicación de publicación de
+contenido en redes sociales y nuestro asistente de atención por WhatsApp.</p>
+
+<h2>2. Información que utilizamos</h2>
+<p>Nuestra aplicación de publicación en Facebook opera exclusivamente sobre la
+página oficial de la empresa y <strong>no recopila, almacena ni procesa datos
+personales de usuarios de Facebook</strong>. Solo publica contenido del
+inventario propio de la empresa (vehículos, precios y fotografías).</p>
+<p>En el canal de WhatsApp, los mensajes que los clientes nos envían se usan
+únicamente para responder sus consultas sobre vehículos y coordinar su visita
+o compra. No vendemos ni compartimos esa información con terceros.</p>
+
+<h2>3. Retención de datos</h2>
+<p>Las conversaciones de atención al cliente se procesan de forma temporal para
+brindar el servicio y no se conservan de manera permanente en nuestros
+sistemas.</p>
+
+<h2>4. Servicios de terceros</h2>
+<p>Utilizamos plataformas de Meta (Facebook y WhatsApp Business) y servicios de
+Google (hojas de cálculo y almacenamiento de imágenes) para operar nuestros
+canales. El uso de dichas plataformas se rige adicionalmente por las políticas
+de privacidad de Meta y Google respectivamente.</p>
+
+<h2>5. Eliminación de datos</h2>
+<p>Si deseas que eliminemos cualquier dato relacionado contigo (por ejemplo, el
+historial de una conversación de WhatsApp), escríbenos por WhatsApp al
++502&nbsp;4170&nbsp;6199 y atenderemos tu solicitud.</p>
+
+<h2>6. Contacto</h2>
+<p>Para cualquier consulta sobre esta política:<br>
+WhatsApp: +502 4170 6199<br>
+Dirección: 35 Avenida 16-33 Zona 7, Villa Linda 2, Ciudad de Guatemala<br>
+Horario: Lunes a Sábado, 8:00 AM – 6:00 PM</p>
+
+<footer>© Importadora Los Gemelos y Fer. Todos los derechos reservados.</footer>
+</body>
+</html>"""
+        return html, 200, {"Content-Type": "text/html; charset=utf-8"}
+
     @app.route("/debug-foto")
     def _debug_foto():
         """Prueba subir UNA foto sola y muestra el error exacto de Facebook."""
