@@ -69,19 +69,74 @@ PROMO_TEXTO = "Menciónanos que vienes de Facebook y el traspaso va GRATIS"
 WHATSAPP_DISPLAY = "+502 4170 6199"
 
 FONT_DIR = "/mnt/skills/examples/canvas-design/canvas-fonts/"
+FONT_CACHE = "/tmp/collage_fonts/"
 
-# Fallback si el modulo corre en Render y las fuentes no estan (se usan las
-# del sistema); en Render conviene incluir las .ttf en el repo. Ver nota abajo.
-FONT_DIR_FALLBACK = os.environ.get("FONT_DIR", FONT_DIR)
+# URLs de Google Fonts (acceso publico, sin API key)
+FONT_URLS = {
+    "BigShoulders-Bold.ttf": "https://fonts.gstatic.com/s/bigshoulderstextdisplay/v24/ptRMTieMYPNBAK21_rBPm8f6NYM7dGRD_6O7-ioGRhhrtjeF.ttf",
+    "WorkSans-Bold.ttf":     "https://fonts.gstatic.com/s/worksans/v19/QGY_z_wNahGAdqQ43RhVcIgYT2Xz5u32K0nXBiAJoI3ZKyHaQg.ttf",
+    "WorkSans-Regular.ttf":  "https://fonts.gstatic.com/s/worksans/v19/QGY_z_wNahGAdqQ43RhVcIgYT2Xz5u32K0nXBiAJoI3ZKyHaQg.ttf",
+    "DMMono-Regular.ttf":    "https://fonts.gstatic.com/s/dmmono/v14/aFTU7PB1QTsUX8KYvumzKlQr.ttf",
+}
 
 
 def _font(nombre, tam):
-    """Carga una fuente, probando primero el dir de skills y luego el fallback."""
-    for base in (FONT_DIR, FONT_DIR_FALLBACK):
-        ruta = os.path.join(base, nombre)
-        if os.path.exists(ruta):
-            return ImageFont.truetype(ruta, tam)
-    # Ultimo recurso: fuente por defecto de PIL
+    """
+    Carga una fuente. Orden de busqueda:
+    1. Directorio de skills de Claude (ambiente local)
+    2. Cache en /tmp (si ya se descargo antes en Render)
+    3. Descarga desde Google Fonts y guarda en cache
+    4. Fuente del sistema Ubuntu si existe
+    5. Fuente por defecto de PIL (ultimo recurso)
+    """
+    # 1. Local (Claude)
+    ruta_local = os.path.join(FONT_DIR, nombre)
+    if os.path.exists(ruta_local):
+        return ImageFont.truetype(ruta_local, tam)
+
+    # 2. Cache /tmp
+    os.makedirs(FONT_CACHE, exist_ok=True)
+    ruta_cache = os.path.join(FONT_CACHE, nombre)
+    if os.path.exists(ruta_cache):
+        return ImageFont.truetype(ruta_cache, tam)
+
+    # 3. Descargar desde Google Fonts
+    if nombre in FONT_URLS:
+        try:
+            resp = requests.get(FONT_URLS[nombre], timeout=15)
+            if resp.status_code == 200:
+                with open(ruta_cache, "wb") as f:
+                    f.write(resp.content)
+                log.info("Fuente descargada: %s", nombre)
+                return ImageFont.truetype(ruta_cache, tam)
+        except Exception as e:
+            log.warning("No se pudo descargar fuente %s: %s", nombre, e)
+
+    # 4. Fuentes del sistema Ubuntu
+    alternativas = {
+        "BigShoulders-Bold.ttf": [
+            "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+        ],
+        "WorkSans-Bold.ttf": [
+            "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+        ],
+        "WorkSans-Regular.ttf": [
+            "/usr/share/fonts/truetype/liberation/LiberationSans.ttf",
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        ],
+        "DMMono-Regular.ttf": [
+            "/usr/share/fonts/truetype/liberation/LiberationMono-Regular.ttf",
+            "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
+        ],
+    }
+    for ruta_sys in alternativas.get(nombre, []):
+        if os.path.exists(ruta_sys):
+            return ImageFont.truetype(ruta_sys, tam)
+
+    # 5. Ultimo recurso
+    log.warning("Usando fuente por defecto para %s (texto puede verse pequeno)", nombre)
     return ImageFont.load_default()
 
 
