@@ -627,9 +627,13 @@ def registrar_rutas(app):
     def _reparar_facebook():
         """
         Corrige posts atascados por el bug conocido de Facebook con posts
-        programados via API: quedan con is_hidden=true / is_published=false
-        aunque ya deberian estar publicados y visibles en el muro.
-        Los detecta y los fuerza a visible.
+        programados via API (quedan ocultos aunque ya se publicaron).
+
+        Uso: /reparar-facebook?token=...&posts=POST_ID1,POST_ID2,...
+        Los post_id salen de las respuestas de /publicar-facebook-estado.
+
+        Si no se pasa ?posts=, intenta descubrirlos leyendo el feed
+        (puede fallar con error #10 en apps en modo desarrollo).
         """
         if not _token_valido():
             return jsonify({"error": "no autorizado"}), 403
@@ -637,7 +641,31 @@ def registrar_rutas(app):
         page_id = os.environ["FB_PAGE_ID"]
         token = _obtener_page_token()
 
-        # Traer el feed completo (incluye publicados y no publicados)
+        posts_param = request.args.get("posts", "").strip()
+
+        if posts_param:
+            # Modo directo: reparar los IDs indicados sin leer el feed
+            ids = [p.strip() for p in posts_param.split(",") if p.strip()]
+            reparados = []
+            for post_id in ids:
+                fix = requests.post(
+                    f"{GRAPH_BASE}/{post_id}",
+                    data={"is_hidden": "false", "access_token": token},
+                    timeout=30,
+                )
+                reparados.append({
+                    "post_id": post_id,
+                    "ok": fix.status_code == 200,
+                    "respuesta": "reparado" if fix.status_code == 200 else fix.text[:300],
+                })
+            return jsonify({
+                "ok": True,
+                "modo": "directo",
+                "posts_reparados": sum(1 for r in reparados if r["ok"]),
+                "detalle": reparados,
+            })
+
+        # Modo descubrimiento: intentar leer el feed
         resp = requests.get(
             f"{GRAPH_BASE}/{page_id}/feed",
             params={
@@ -648,7 +676,12 @@ def registrar_rutas(app):
             timeout=30,
         )
         if resp.status_code != 200:
-            return jsonify({"ok": False, "error": resp.text[:500]}), 500
+            return jsonify({
+                "ok": False,
+                "error": resp.text[:500],
+                "sugerencia": "Usa el modo directo: agrega &posts=POST_ID1,POST_ID2 con los "
+                              "post_id de /publicar-facebook-estado.",
+            }), 500
 
         posts = resp.json().get("data", [])
         ahora = int(datetime.now(timezone.utc).timestamp())
