@@ -65,6 +65,11 @@ VEHICULOS_POR_COLLAGE = 4
 # Texto de la promocion (banda inferior)
 PROMO_TEXTO = "Menciónanos que vienes de Facebook y el traspaso va GRATIS"
 
+BENEFICIOS = [
+    "Garantía en todos nuestros vehículos",
+    "Escáner profesional GRATIS en tu compra",
+]
+
 # Datos de contacto
 WHATSAPP_DISPLAY = "+502 4170 6199"
 
@@ -247,7 +252,7 @@ def _dibujar_tarjeta(base, x, y, ancho, alto, vehiculo, foto):
     draw.rounded_rectangle([x, y, x + ancho, y + alto], radius=radio, fill=COL_TARJETA)
 
     # --- Foto (mitad superior de la tarjeta) ---
-    foto_h = int(alto * 0.55)
+    foto_h = int(alto * 0.64)
     margen = 0
     if foto is not None:
         foto_contenida = _contener_imagen(foto, ancho, foto_h)
@@ -267,20 +272,17 @@ def _dibujar_tarjeta(base, x, y, ancho, alto, vehiculo, foto):
     draw.rectangle([x, y + foto_h, x + ancho, y + foto_h + 4], fill=COL_ACENTO)
 
     # --- Texto (mitad inferior) ---
-    tx = x + 24
-    ty = y + foto_h + 20
+    tx = x + 20
+    ty = y + foto_h + 12
 
     marca = vehiculo.get("marca", "").strip()
     modelo = vehiculo.get("modelo", "").strip()
     anio = vehiculo.get("anio", "").strip()
 
     titulo = f"{marca} {modelo}".strip().upper()
-    f_titulo = _font("BigShoulders-Bold.ttf", 36)
-
-    # Ajustar el titulo si es muy largo
-    max_ancho_texto = ancho - 48
-    tam = 36
-    while tam > 22:
+    max_ancho_texto = ancho - 40
+    tam = 30
+    while tam > 18:
         f_titulo = _font("BigShoulders-Bold.ttf", tam)
         w = draw.textlength(titulo, font=f_titulo)
         if w <= max_ancho_texto:
@@ -288,32 +290,24 @@ def _dibujar_tarjeta(base, x, y, ancho, alto, vehiculo, foto):
         tam -= 2
 
     draw.text((tx, ty), titulo, font=f_titulo, fill=COL_TEXTO)
-    ty += tam + 6
+    ty += tam + 4
 
-    # Año como chip de acento
     if anio:
-        f_anio = _font("WorkSans-Bold.ttf", 20)
-        chip_w = int(draw.textlength(anio, font=f_anio)) + 20
-        draw.rounded_rectangle([tx, ty, tx + chip_w, ty + 30], radius=8, fill=COL_ACENTO)
-        draw.text((tx + 10, ty + 4), anio, font=f_anio, fill=(255, 255, 255))
-        ty += 40
+        f_anio = _font("WorkSans-Bold.ttf", 17)
+        chip_w = int(draw.textlength(anio, font=f_anio)) + 16
+        draw.rounded_rectangle([tx, ty, tx + chip_w, ty + 24], radius=6, fill=COL_ACENTO)
+        draw.text((tx + 8, ty + 3), anio, font=f_anio, fill=(255, 255, 255))
+        ty += 32
 
-    # Datos: transmision y millaje (SIN precio)
-    f_dato = _font("WorkSans-Bold.ttf", 22)
+    f_dato = _font("WorkSans-Bold.ttf", 19)
     transmision = vehiculo.get("transmision", "").strip()
     millaje = vehiculo.get("millaje", "").strip()
 
-    lineas = []
-    if transmision:
-        lineas.append(transmision)
-    if millaje:
-        lineas.append(_formatear_millaje(millaje))
-
-    for linea in lineas:
-        by = ty + 9
-        draw.ellipse([tx, by, tx + 7, by + 7], fill=COL_ACENTO)
-        draw.text((tx + 18, ty), linea, font=f_dato, fill=(220, 220, 225))
-        ty += 30
+    for linea in ([transmision] if transmision else []) + ([_formatear_millaje(millaje)] if millaje else []):
+        by = ty + 7
+        draw.ellipse([tx, by, tx + 6, by + 6], fill=COL_ACENTO)
+        draw.text((tx + 16, ty), linea, font=f_dato, fill=(220, 220, 225))
+        ty += 25
 
 
 # --------------------------------------------------------------------------
@@ -337,19 +331,19 @@ def _construir_collage(grupo, logo, indice, total):
     draw = ImageDraw.Draw(base, "RGBA")
 
     # --- Encabezado ---
-    header_h = 150
+    header_h = 120
     if logo is not None:
-        logo_size = 110
+        logo_size = 96
         logo_r = logo.resize((logo_size, logo_size), Image.LANCZOS)
-        base.paste(logo_r, (40, 20), logo_r)
-        texto_x = 40 + logo_size + 20
+        base.paste(logo_r, (40, 14), logo_r)
+        texto_x = 40 + logo_size + 18
     else:
         texto_x = 44
 
-    f_marca = _font("BigShoulders-Bold.ttf", 52)
-    draw.text((texto_x, 30), "LOS GEMELOS Y FER", font=f_marca, fill=COL_TEXTO)
-    f_sub = _font("WorkSans-Bold.ttf", 24)
-    draw.text((texto_x, 94), "VEHÍCULOS DISPONIBLES", font=f_sub, fill=COL_ACENTO)
+    f_marca = _font("BigShoulders-Bold.ttf", 50)
+    draw.text((texto_x, 22), "LOS GEMELOS Y FER", font=f_marca, fill=COL_TEXTO)
+    f_sub = _font("WorkSans-Bold.ttf", 22)
+    draw.text((texto_x, 84), "VEHÍCULOS DISPONIBLES", font=f_sub, fill=COL_ACENTO)
 
     # Contador de pagina (arriba a la derecha)
     if total > 1:
@@ -360,8 +354,9 @@ def _construir_collage(grupo, logo, indice, total):
 
     # --- Rejilla 2x2 de tarjetas ---
     promo_h = 150
+    benef_h = 60
     zona_top = header_h
-    zona_alto = LIENZO - header_h - promo_h
+    zona_alto = LIENZO - header_h - promo_h - benef_h
     gap = 24
     margen_lat = 40
 
@@ -386,6 +381,32 @@ def _construir_collage(grupo, logo, indice, total):
         px, py = posiciones[i]
         _dibujar_tarjeta(base, px, py, celda_w, celda_h, vehiculo, foto)
 
+    # --- Banda de beneficios (entre tarjetas y promo) ---
+    benef_h = 60
+    by0 = LIENZO - promo_h - benef_h
+    draw.rectangle([0, by0, LIENZO, by0 + benef_h], fill=(28, 28, 34))
+    # Linea separadora superior
+    draw.rectangle([0, by0, LIENZO, by0 + 2], fill=COL_ACENTO)
+
+    f_benef = _font("WorkSans-Bold.ttf", 19)
+    # Dividir en dos columnas
+    mitad = LIENZO // 2
+    for i, texto in enumerate(BENEFICIOS[:2]):
+        # Checkmark dibujado a mano
+        cx = 50 + i * mitad
+        cy = by0 + 20
+        # Circulo azul con check
+        draw.ellipse([cx, cy, cx + 20, cy + 20], fill=COL_ACENTO)
+        # Check mark simple (lineas)
+        draw.line([(cx + 4, cy + 10), (cx + 8, cy + 14)], fill=(255,255,255), width=2)
+        draw.line([(cx + 8, cy + 14), (cx + 16, cy + 6)], fill=(255,255,255), width=2)
+        # Texto del beneficio
+        max_w = mitad - 80
+        txt = texto
+        while draw.textlength(txt, font=f_benef) > max_w and len(txt) > 10:
+            txt = txt[:txt.rfind(" ")] + "..."
+        draw.text((cx + 28, cy + 1), txt, font=f_benef, fill=(230, 230, 235))
+
     # --- Banda de promocion (inferior) ---
     py0 = LIENZO - promo_h
     draw.rectangle([0, py0, LIENZO, LIENZO], fill=COL_ACENTO)
@@ -400,13 +421,11 @@ def _construir_collage(grupo, logo, indice, total):
 
     for i, linea in enumerate([linea1, linea2]):
         w = int(draw.textlength(linea, font=f_promo))
-        x_linea = (LIENZO - w) // 2
-        y_linea = py0 + 14 + i * 42
-        draw.text((x_linea, y_linea), linea, font=f_promo, fill=COL_TEXTO)
+        draw.text(((LIENZO - w) // 2, py0 + 14 + i * 42), linea, font=f_promo, fill=COL_TEXTO)
 
-    # WhatsApp
+    # CTA WhatsApp
     f_wa = _font("WorkSans-Bold.ttf", 26)
-    wa_txt = f"WhatsApp  {WHATSAPP_DISPLAY}"
+    wa_txt = f"Para más info: WhatsApp {WHATSAPP_DISPLAY}"
     w = int(draw.textlength(wa_txt, font=f_wa))
     draw.text(((LIENZO - w) // 2, py0 + 106), wa_txt, font=f_wa, fill=COL_TEXTO)
 
@@ -607,4 +626,3 @@ def registrar_rutas_collage(app):
         if indice < 0 or indice >= len(imagenes):
             return jsonify({"error": "indice fuera de rango. Corre /generar-collages primero."}), 404
         return Response(imagenes[indice], mimetype="image/png")
-      
