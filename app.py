@@ -14,6 +14,8 @@ from zoneinfo import ZoneInfo
 from urllib.parse import quote
 import logging
 from openai import OpenAI
+from collage_generator import registrar_rutas_collage
+registrar_rutas_collage(app)
 
 # ─── Logging ──────────────────────────────────────────────────────────────────
 logging.basicConfig(
