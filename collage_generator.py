@@ -237,7 +237,7 @@ def _dibujar_tarjeta(base, x, y, ancho, alto, vehiculo, foto):
     draw.rounded_rectangle([x, y, x + ancho, y + alto], radius=radio, fill=COL_TARJETA)
 
     # --- Foto (mitad superior de la tarjeta) ---
-    foto_h = int(alto * 0.58)
+    foto_h = int(alto * 0.55)
     margen = 0
     if foto is not None:
         foto_ajustada = _recortar_llenar(foto, ancho, foto_h)
@@ -351,7 +351,7 @@ def _construir_collage(grupo, logo, indice, total):
         draw.text((LIENZO - 44 - w, 60), pag_txt, font=f_pag, fill=COL_TEXTO_TENUE)
 
     # --- Rejilla 2x2 de tarjetas ---
-    promo_h = 130
+    promo_h = 150
     zona_top = header_h
     zona_alto = LIENZO - header_h - promo_h
     gap = 24
@@ -382,16 +382,25 @@ def _construir_collage(grupo, logo, indice, total):
     py0 = LIENZO - promo_h
     draw.rectangle([0, py0, LIENZO, LIENZO], fill=COL_ACENTO)
 
-    # Texto de promo (envuelto en 2 lineas)
-    f_promo = _font("BigShoulders-Bold.ttf", 38)
-    _texto_centrado_multilinea(
-        draw, PROMO_TEXTO, f_promo, LIENZO, py0 + 20, COL_TEXTO, max_ancho=LIENZO - 80
-    )
+    # Linea separadora sutil
+    draw.rectangle([0, py0, LIENZO, py0 + 3], fill=(255, 255, 255))
 
-    f_wa = _font("WorkSans-Bold.ttf", 28)
+    # Promo en dos lineas separadas (evita que se pisen)
+    linea1 = "Menciónanos que vienes de Facebook"
+    linea2 = "y el traspaso va GRATIS"
+    f_promo = _font("BigShoulders-Bold.ttf", 32)
+
+    for i, linea in enumerate([linea1, linea2]):
+        w = int(draw.textlength(linea, font=f_promo))
+        x_linea = (LIENZO - w) // 2
+        y_linea = py0 + 14 + i * 42
+        draw.text((x_linea, y_linea), linea, font=f_promo, fill=COL_TEXTO)
+
+    # WhatsApp
+    f_wa = _font("WorkSans-Bold.ttf", 26)
     wa_txt = f"WhatsApp  {WHATSAPP_DISPLAY}"
     w = int(draw.textlength(wa_txt, font=f_wa))
-    draw.text(((LIENZO - w) // 2, py0 + promo_h - 44), wa_txt, font=f_wa, fill=COL_TEXTO)
+    draw.text(((LIENZO - w) // 2, py0 + 106), wa_txt, font=f_wa, fill=COL_TEXTO)
 
     return base
 
