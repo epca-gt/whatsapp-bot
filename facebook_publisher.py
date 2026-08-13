@@ -7,8 +7,10 @@ Importadora Los Gemelos y Fer, a partir del inventario en Google Sheets.
 PRINCIPIOS DE DISENO (consistentes con el bot de WhatsApp):
   - El caption lo redacta Python de forma determinista desde el Sheet.
     La IA NO escribe precios ni especificaciones.
-  - Todo se publica como BORRADOR (published=false). Un humano aprueba
-    y publica desde Meta Business Suite.
+  - Todo se crea como publicacion PROGRAMADA con una ventana de revision
+    (HORAS_VENTANA_REVISION). Aparece en el Planificador de Meta Business
+    Suite, donde un humano puede editar, adelantar o eliminar el post
+    antes de que se publique automaticamente.
   - Nunca se inventan datos: si una columna viene vacia, simplemente
     no aparece en el caption.
   - Rotacion controlada por la columna `ultima_publicacion_fb` del Sheet.
@@ -86,6 +88,12 @@ def _obtener_page_token():
 
 # Cuantos vehiculos se publican por corrida
 VEHICULOS_POR_CORRIDA = 6
+
+# Ventana de revision: los posts se programan para publicarse N horas
+# despues de creados. Durante esa ventana aparecen en el Planificador de
+# Meta Business Suite como "Programados", donde se pueden editar,
+# adelantar o eliminar antes de que salgan.
+HORAS_VENTANA_REVISION = 6
 
 # Facebook maneja hasta 10 fotos de forma confiable en attached_media
 MAX_FOTOS_POR_POST = 10
@@ -423,10 +431,18 @@ def crear_borrador(vehiculo):
             "detalle_errores": errores_fotos,
         }
 
-    # Crear el post como BORRADOR con todas las fotos adjuntas
+    # Crear el post PROGRAMADO con todas las fotos adjuntas.
+    # scheduled_publish_time lo hace visible en el Planificador de Meta
+    # Business Suite como "Programado": revisable, editable y cancelable
+    # durante la ventana de revision. Si nadie lo toca, se publica solo.
+    publicar_en = int(
+        (datetime.now(timezone.utc) + timedelta(hours=HORAS_VENTANA_REVISION)).timestamp()
+    )
+
     payload = {
         "message": caption,
         "published": "false",
+        "scheduled_publish_time": publicar_en,
         "access_token": token,
     }
     for i, media_id in enumerate(media_ids):
@@ -441,11 +457,14 @@ def crear_borrador(vehiculo):
             "error": f"Facebook respondio {resp.status_code}: {resp.text[:300]}",
         }
 
+    hora_local = datetime.fromtimestamp(publicar_en, TZ_GT).strftime("%Y-%m-%d %H:%M")
+
     return {
         "id": vehiculo.get("id"),
         "ok": True,
         "post_id": resp.json().get("id"),
         "fotos": len(media_ids),
+        "programado_para": f"{hora_local} (hora Guatemala)",
         "_fila": vehiculo["_fila"],
     }
 
