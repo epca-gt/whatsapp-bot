@@ -177,11 +177,21 @@ def _primera_foto_url(vehiculo):
     return principal or None
 
 
-def _recortar_llenar(img, ancho, alto):
-    """Recorta y escala una imagen para llenar exactamente ancho x alto (cover).
-    Centra horizontalmente pero encuadra un poco hacia arriba (0.35)
-    para que el carro no quede cortado por el techo."""
-    return ImageOps.fit(img, (ancho, alto), method=Image.LANCZOS, centering=(0.5, 0.35))
+def _contener_imagen(img, ancho, alto, color_fondo=(18, 18, 22)):
+    """
+    Escala la imagen para que quepa COMPLETA dentro de ancho x alto
+    manteniendo la proporcion (contain). Rellena con fondo oscuro.
+    Asi el carro siempre sale entero, sin recortes.
+    """
+    fondo = Image.new("RGB", (ancho, alto), color_fondo)
+    escala = min(ancho / img.width, alto / img.height)
+    nuevo_w = int(img.width * escala)
+    nuevo_h = int(img.height * escala)
+    img_r = img.resize((nuevo_w, nuevo_h), Image.LANCZOS)
+    x = (ancho - nuevo_w) // 2
+    y = (alto - nuevo_h) // 2
+    fondo.paste(img_r, (x, y))
+    return fondo
 
 
 def _esquinas_redondeadas(img, radio):
@@ -240,11 +250,9 @@ def _dibujar_tarjeta(base, x, y, ancho, alto, vehiculo, foto):
     foto_h = int(alto * 0.55)
     margen = 0
     if foto is not None:
-        foto_ajustada = _recortar_llenar(foto, ancho, foto_h)
-        foto_red = _esquinas_redondeadas(foto_ajustada, radio)
-        # Recortar solo esquinas superiores redondeadas: pegar y luego tapar abajo
+        foto_contenida = _contener_imagen(foto, ancho, foto_h)
+        foto_red = _esquinas_redondeadas(foto_contenida, radio)
         base.paste(foto_red, (x, y), foto_red)
-        # Tapar las esquinas inferiores de la foto para que no queden redondeadas
         draw.rectangle([x, y + foto_h - radio, x + ancho, y + foto_h], fill=COL_TARJETA)
     else:
         draw.rounded_rectangle(
@@ -599,3 +607,4 @@ def registrar_rutas_collage(app):
         if indice < 0 or indice >= len(imagenes):
             return jsonify({"error": "indice fuera de rango. Corre /generar-collages primero."}), 404
         return Response(imagenes[indice], mimetype="image/png")
+      
