@@ -367,7 +367,8 @@ def _texto_centrado_multilinea(draw, texto, font, ancho_lienzo, y, color, max_an
 # --------------------------------------------------------------------------
 
 # Cache en RAM de los collages generados (bytes PNG)
-_collages_cache = {"imagenes": [], "info": []}
+_collages_cache = {"imagenes": [], "info": [], "en_progreso": False, "error": None}
+_lock_collages = __import__("threading").Lock()
 
 
 def generar_todos_los_collages():
@@ -422,6 +423,20 @@ def generar_todos_los_collages():
 # ENDPOINTS FLASK
 # --------------------------------------------------------------------------
 
+def _generar_collages_bg():
+    """Genera collages en segundo plano (en un hilo)."""
+    try:
+        resumen = generar_todos_los_collages()
+        with _lock_collages:
+            _collages_cache["en_progreso"] = False
+            _collages_cache["error"] = None
+    except Exception as e:
+        log.exception("Error en generacion de collages")
+        with _lock_collages:
+            _collages_cache["en_progreso"] = False
+            _collages_cache["error"] = str(e)
+
+
 def registrar_rutas_collage(app):
     """
     Registra los endpoints de collages. En app.py:
@@ -429,7 +444,8 @@ def registrar_rutas_collage(app):
         from collage_generator import registrar_rutas_collage
         registrar_rutas_collage(app)
     """
-    from flask import request, jsonify, Response, url_for
+    from flask import request, jsonify, Response
+    import threading
 
     def _token_valido():
         esperado = os.environ.get("FB_PUBLISH_TOKEN", "")
@@ -464,21 +480,51 @@ def registrar_rutas_collage(app):
 
     @app.route("/generar-collages")
     def _generar_collages():
-        """Genera todas las imagenes y devuelve links para descargarlas."""
+        """Dispara la generacion en segundo plano y responde al instante."""
         if not _token_valido():
             return jsonify({"error": "no autorizado"}), 403
-        try:
-            resumen = generar_todos_los_collages()
+        
+        with _lock_collages:
+            if _collages_cache["en_progreso"]:
+                return jsonify({
+                    "ok": False,
+                    "error": "Ya hay una generacion en progreso. Consulta /collages-estado."
+                }), 409
+            _collages_cache["en_progreso"] = True
+            _collages_cache["error"] = None
+            _collages_cache["imagenes"] = []
+            _collages_cache["info"] = []
+
+        hilo = threading.Thread(target=_generar_collages_bg, daemon=True)
+        hilo.start()
+
+        return jsonify({
+            "ok": True,
+            "mensaje": "Generacion de collages iniciada en segundo plano. Consulta /collages-estado con el mismo token.",
+        })
+
+    @app.route("/collages-estado")
+    def _collages_estado():
+        """Muestra el estado y resultado de la ultima generacion."""
+        if not _token_valido():
+            return jsonify({"error": "no autorizado"}), 403
+        
+        with _lock_collages:
             token = request.args.get("token", "")
             base = request.host_url.rstrip("/")
-            resumen["descargas"] = [
-                f"{base}/collage/{i}?token={token}"
-                for i in range(len(_collages_cache["imagenes"]))
-            ]
-            return jsonify(resumen)
-        except Exception as e:
-            log.exception("Error generando collages")
-            return jsonify({"ok": False, "error": str(e)}), 500
+            
+            resultado = {
+                "en_progreso": _collages_cache["en_progreso"],
+                "error": _collages_cache["error"],
+                "collages_generados": len(_collages_cache["imagenes"]),
+            }
+            if not _collages_cache["en_progreso"] and _collages_cache["imagenes"]:
+                resultado["info"] = _collages_cache["info"]
+                resultado["descargas"] = [
+                    f"{base}/collage/{i}?token={token}"
+                    for i in range(len(_collages_cache["imagenes"]))
+                ]
+            return jsonify(resultado)
 
     @app.route("/collage/<int:indice>")
     def _ver_collage(indice):
