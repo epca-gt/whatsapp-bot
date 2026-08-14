@@ -111,6 +111,13 @@ stats = {"consultas_hoy": 0, "vehiculos_vistos": {}, "asesores_hoy": [], "fecha"
 actividad_reciente = []            # últimos eventos para el dashboard
 MAX_ACTIVIDAD = 50
 
+leads_calientes_hoy  = []          # clientes que calcularon cuotas hoy
+clientes_nuevos_hoy  = []          # clientes nuevos del día con su primera consulta
+busquedas_sin_resultado = []       # búsquedas que no encontraron vehículos
+MAX_LEADS_CALIENTES  = 30
+MAX_CLIENTES_NUEVOS  = 30
+MAX_SIN_RESULTADO    = 50
+
 DASHBOARD_TOKEN = os.getenv("DASHBOARD_TOKEN", "")
 
 codigos_recibidos = []             # códigos de verificación que llegan al número del bot
@@ -754,6 +761,18 @@ def ejecutar_tool_inventario(marca=None, modelo=None, precio_max=None, anio=None
     logger.info("TOOL lista -> total=%d filtrado=%d (marca=%s modelo=%s min=%s max=%s anio=%s)",
                 len(carros), len(resultados), marca, modelo, precio_min, precio_max, anio)
 
+    if len(resultados) == 0:
+        termino = " ".join(filter(None, [marca, modelo,
+                                         str(anio) if anio else "",
+                                         f"hasta Q{precio_max:,.0f}" if precio_max else "",
+                                         f"desde Q{precio_min:,.0f}" if precio_min else ""])).strip()
+        with _state_lock:
+            busquedas_sin_resultado.insert(0, {
+                "hora":    datetime.now(GUATEMALA_TZ).strftime("%H:%M"),
+                "termino": termino or "(sin filtros)"
+            })
+            del busquedas_sin_resultado[MAX_SIN_RESULTADO:]
+
     fotos_validas = []
     if 0 < len(resultados) < FOTOS_SI_COINCIDENCIAS_MENOR_A:
         fotos_validas = [f for f in fotos if f["url"]][:MAX_FOTOS_POR_RESPUESTA]
@@ -769,7 +788,7 @@ def ejecutar_tool_inventario(marca=None, modelo=None, precio_max=None, anio=None
         "vehiculos": resultados[:MAX_RESULTADOS_LISTA]
     }, fotos_validas
 
-def ejecutar_tool_detalle(id=None, descripcion_vehiculo=None):
+def ejecutar_tool_detalle(id=None, descripcion_vehiculo=None, cliente=""):
     carro = None
     if id:
         carro = buscar_carro_por_id(id)
@@ -804,6 +823,13 @@ def ejecutar_tool_detalle(id=None, descripcion_vehiculo=None):
 
     if not carro:
         logger.info("TOOL detalle -> NO encontrado (id=%s texto=%s)", id, descripcion_vehiculo)
+        termino = descripcion_vehiculo or id or "(desconocido)"
+        with _state_lock:
+            busquedas_sin_resultado.insert(0, {
+                "hora":    datetime.now(GUATEMALA_TZ).strftime("%H:%M"),
+                "termino": f"detalle: {termino}"
+            })
+            del busquedas_sin_resultado[MAX_SIN_RESULTADO:]
         return {"encontrado": False, "mensaje": "No se encontró ese vehículo en el inventario."}, []
 
     disponible = esta_disponible(carro)
@@ -815,6 +841,7 @@ def ejecutar_tool_detalle(id=None, descripcion_vehiculo=None):
         clave = f"{carro.get('id')} | {nombre_carro}"
         stats["vehiculos_vistos"][clave] = stats["vehiculos_vistos"].get(clave, 0) + 1
     registrar_actividad("detalle", nombre_carro)
+    guardar_lead(cliente, f"Vio detalle: {nombre_carro} | Precio: {carro.get('precio','')}", "interesado_en")
 
     foto_url = url_imagen_directa(carro.get("foto_principal"))
     fotos = []
@@ -849,7 +876,7 @@ def ejecutar_tool_detalle(id=None, descripcion_vehiculo=None):
     }, fotos
 
 def ejecutar_tool_visa_cuotas(id_vehiculo=None, monto=None, cuotas=None,
-                              pago_contado=None, monto_a_tarjeta=None):
+                              pago_contado=None, monto_a_tarjeta=None, cliente=""):
     referencia, base = None, None
 
     if id_vehiculo:
@@ -930,6 +957,19 @@ def ejecutar_tool_visa_cuotas(id_vehiculo=None, monto=None, cuotas=None,
     logger.info("TOOL visa_cuotas -> base=%s contado=%s tarjeta=%s cuotas=%s",
                 base, contado, tarjeta, cuotas)
     registrar_actividad("cuotas", referencia or formato_quetzales(base))
+    detalle_cuotas = (f"Calculó cuotas: {referencia or formato_quetzales(base)}"
+                      + (f" | {cuotas} cuotas" if cuotas else "")
+                      + (f" | Prima Q{pago_contado:,.0f}" if pago_contado else ""))
+    guardar_lead(cliente, detalle_cuotas, "lead_caliente")
+    with _state_lock:
+        leads_calientes_hoy.insert(0, {
+            "hora":     datetime.now(GUATEMALA_TZ).strftime("%H:%M"),
+            "telefono": cliente,
+            "vehiculo": referencia or formato_quetzales(base),
+            "cuotas":   str(cuotas) if cuotas else "varios plazos",
+            "prima":    formato_quetzales(pago_contado) if pago_contado else "—"
+        })
+        del leads_calientes_hoy[MAX_LEADS_CALIENTES:]
     return resultado, []
 
 def quitar_texto_de_cuotas(texto: str) -> str:
@@ -1064,7 +1104,8 @@ def despachar_tool(nombre: str, args: dict, cliente: str = ""):
     if nombre == "detalle_vehiculo":
         return ejecutar_tool_detalle(
             id=args.get("id"),
-            descripcion_vehiculo=args.get("descripcion_vehiculo")
+            descripcion_vehiculo=args.get("descripcion_vehiculo"),
+            cliente=cliente
         )
     if nombre == "calcular_visa_cuotas":
         return ejecutar_tool_visa_cuotas(
@@ -1072,7 +1113,8 @@ def despachar_tool(nombre: str, args: dict, cliente: str = ""):
             monto=args.get("monto"),
             cuotas=args.get("cuotas"),
             pago_contado=args.get("pago_contado"),
-            monto_a_tarjeta=args.get("monto_a_tarjeta")
+            monto_a_tarjeta=args.get("monto_a_tarjeta"),
+            cliente=cliente
         )
     if nombre == "enviar_ubicacion":
         return ejecutar_tool_ubicacion()
@@ -1487,13 +1529,25 @@ def handle_text_message(from_number: str, user_text_raw: str):
             stats["consultas_hoy"] = 0
             stats["vehiculos_vistos"] = {}
             stats["asesores_hoy"] = []
+            leads_calientes_hoy.clear()
+            clientes_nuevos_hoy.clear()
+            busquedas_sin_resultado.clear()
         stats["consultas_hoy"] += 1
         es_nuevo = from_number not in known_users
         known_users.add(from_number)
 
     if es_nuevo:
-        guardar_lead(from_number, "Usuario Nuevo", "usuario_nuevo")
+        guardar_lead(from_number,
+                     f"Usuario Nuevo | Primera consulta: {user_text_raw[:200]}",
+                     "usuario_nuevo")
         registrar_actividad("nuevo", "Cliente nuevo escribió", from_number)
+        with _state_lock:
+            clientes_nuevos_hoy.insert(0, {
+                "hora":     datetime.now(GUATEMALA_TZ).strftime("%H:%M"),
+                "telefono": from_number,
+                "consulta": user_text_raw[:200]
+            })
+            del clientes_nuevos_hoy[MAX_CLIENTES_NUEVOS:]
 
     resultado = procesar_mensaje_con_agente(from_number, user_text_raw)
 
@@ -1640,11 +1694,35 @@ def admin_dashboard():
         asesores = list(stats["asesores_hoy"])[:15]
         actividad = list(actividad_reciente)[:25]
         codigos = list(codigos_recibidos)
+        calientes = list(leads_calientes_hoy)
+        nuevos    = list(clientes_nuevos_hoy)
+        sin_res   = list(busquedas_sin_resultado)[:20]
         sesiones = len(user_chat_histories)
         usuarios = len(known_users)
 
     def esc(t):
         return (str(t).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"))
+
+    filas_calientes = "".join(
+        f"<tr><td>{esc(l['hora'])}</td>"
+        f"<td>...{esc(l['telefono'][-4:] if len(l['telefono'])>=4 else l['telefono'])}</td>"
+        f"<td>{esc(l['vehiculo'])}</td>"
+        f"<td>{esc(l['cuotas'])}</td>"
+        f"<td>{esc(l['prima'])}</td></tr>"
+        for l in calientes
+    ) or "<tr><td colspan='5' class='vacio'>Sin leads calientes hoy</td></tr>"
+
+    filas_nuevos = "".join(
+        f"<tr><td>{esc(n['hora'])}</td>"
+        f"<td>...{esc(n['telefono'][-4:] if len(n['telefono'])>=4 else n['telefono'])}</td>"
+        f"<td>{esc(n['consulta'])}</td></tr>"
+        for n in nuevos
+    ) or "<tr><td colspan='3' class='vacio'>Sin clientes nuevos hoy</td></tr>"
+
+    filas_sin_res = "".join(
+        f"<tr><td>{esc(s['hora'])}</td><td class='sinres'>{esc(s['termino'])}</td></tr>"
+        for s in sin_res
+    ) or "<tr><td colspan='2' class='vacio'>Sin búsquedas fallidas — ¡todo se encontró!</td></tr>"
 
     filas_vistos = "".join(
         f"<tr><td>{esc(nombre)}</td><td class='num'>{n}</td></tr>"
@@ -1686,32 +1764,53 @@ def admin_dashboard():
   .card {{ background:#1c1c1e; border-radius:12px; padding:14px; }}
   .card .valor {{ font-size:1.6rem; font-weight:700; }}
   .card .label {{ color:#999; font-size:.75rem; margin-top:2px; }}
+  .card.hot .valor {{ color:#ff6b6b; }}
   h2 {{ font-size:.95rem; margin:22px 0 8px; color:#ccc; }}
   table {{ width:100%; border-collapse:collapse; background:#1c1c1e; border-radius:12px;
-           overflow:hidden; font-size:.85rem; }}
+           overflow:hidden; font-size:.85rem; margin-bottom:4px; }}
   td {{ padding:8px 10px; border-bottom:1px solid #2a2a2c; vertical-align:top; }}
   tr:last-child td {{ border-bottom:none; }}
   .num {{ text-align:right; font-weight:700; width:3em; }}
   .vacio {{ color:#777; font-style:italic; }}
   .tel {{ color:#888; font-size:.75rem; }}
   .codigo {{ font-family:monospace; font-size:1.05rem; font-weight:700; color:#ffd479; }}
+  .sinres {{ color:#ff9f43; font-weight:600; }}
 </style></head><body>
 <h1>📊 Los Gemelos y Fer — Panel del bot</h1>
 <div class="sub">{fecha} · se actualiza solo cada 60 s</div>
 
 <div class="cards">
   <div class="card"><div class="valor">{consultas}</div><div class="label">Consultas hoy</div></div>
+  <div class="card hot"><div class="valor">{len(calientes)}</div><div class="label">Leads calientes hoy</div></div>
+  <div class="card"><div class="valor">{len(nuevos)}</div><div class="label">Clientes nuevos hoy</div></div>
   <div class="card"><div class="valor">{len(asesores)}</div><div class="label">Pidieron asesor hoy</div></div>
-  <div class="card"><div class="valor">{usuarios}</div><div class="label">Clientes desde el arranque</div></div>
   <div class="card"><div class="valor">{sesiones}</div><div class="label">Chats activos ahora</div></div>
   <div class="card"><div class="valor">{len(disponibles)}</div><div class="label">Vehículos disponibles</div></div>
-  <div class="card"><div class="valor">{len(con_foto)}</div><div class="label">Con foto válida</div></div>
 </div>
+
+<h2>🔥 Leads calientes hoy (calcularon cuotas)</h2>
+<table>
+  <tr style="color:#999;font-size:.8rem">
+    <td>Hora</td><td>Tel</td><td>Vehículo</td><td>Plazo</td><td>Prima</td>
+  </tr>
+  {filas_calientes}
+</table>
+
+<h2>🆕 Clientes nuevos hoy</h2>
+<table>
+  <tr style="color:#999;font-size:.8rem">
+    <td>Hora</td><td>Tel</td><td>Primera consulta</td>
+  </tr>
+  {filas_nuevos}
+</table>
+
+<h2>❌ Búsquedas sin resultado (inventario que piden y no tenés)</h2>
+<table>{filas_sin_res}</table>
 
 <h2>🔐 Códigos de verificación recibidos</h2>
 <table>{filas_codigos}</table>
 
-<h2>🔥 Carros más consultados hoy</h2>
+<h2>🚗 Carros más consultados hoy</h2>
 <table>{filas_vistos}</table>
 
 <h2>🙋 Solicitudes de asesor hoy</h2>
