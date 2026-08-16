@@ -281,11 +281,11 @@ def generar_caption(vehiculo):
 
     lineas = [titulo, ""]
 
-    precio = vehiculo.get("precio", "").strip()
-    if precio:
-        lineas.append(f"💰 {_formatear_precio(precio)}")
+    # PRECIO OMITIDO INTENCIONALMENTE:
+    # Para que los clientes contacten al agente de WhatsApp a preguntar.
+    # El precio vive en el Sheet pero no se publica en Facebook.
 
-    # Especificaciones, solo las que existan
+    # Especificaciones
     specs = [
         ("🔧", vehiculo.get("motor", "").strip()),
         ("⚙️", vehiculo.get("transmision", "").strip()),
@@ -313,13 +313,15 @@ def generar_caption(vehiculo):
         "✅ Visitas SIN cita previa",
         "🚗 Recibimos tu vehículo como parte de pago",
         "💳 Aceptamos Visa Cuotas",
+        "📋 Garantía por escrito incluida",
+        "🔍 Escaneo profesional GRATIS en tu compra",
         "",
         "📍 35 Avenida 16-33 Zona 7, Villa Linda 2, Ciudad de Guatemala",
         "🕐 Lunes a Sábado, 8:00 AM – 6:00 PM",
     ])
 
     if whatsapp:
-        lineas.extend(["", f"💬 Escríbenos: {whatsapp}"])
+        lineas.extend(["", f"💬 Precio e info: {whatsapp}"])
 
     return "\n".join(lineas)
 
