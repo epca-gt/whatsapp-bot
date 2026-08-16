@@ -841,7 +841,9 @@ def ejecutar_tool_detalle(id=None, descripcion_vehiculo=None, cliente=""):
         clave = f"{carro.get('id')} | {nombre_carro}"
         stats["vehiculos_vistos"][clave] = stats["vehiculos_vistos"].get(clave, 0) + 1
     registrar_actividad("detalle", nombre_carro)
-    guardar_lead(cliente, f"Vio detalle: {nombre_carro} | Precio: {carro.get('precio','')}", "interesado_en")
+    guardar_lead(cliente,
+                 f"Vio detalle: {nombre_carro} | Precio: {carro.get('precio','')}",
+                 "interesado_en")
 
     foto_url = url_imagen_directa(carro.get("foto_principal"))
     fotos = []
@@ -1247,7 +1249,7 @@ SYSTEM_PROMPT_TEXT = (
 # ─── Agente AI ────────────────────────────────────────────────────────────────
 def procesar_mensaje_con_agente(from_number: str, user_text_raw: str) -> dict:
     if not openai_client:
-        return {"texto": "Servicio temporalmente en mantenimiento.", "fotos": [], "enviar_ubicacion": False}
+        return {"texto": "Servicio temporalmente en mantenimiento.", "fotos": [], "enviar_ubicacion": False, "tools_llamadas": []}
 
     historial = get_history(from_number)
     messages = [{"role": "system", "content": SYSTEM_PROMPT_TEXT}]
@@ -1344,7 +1346,8 @@ def procesar_mensaje_con_agente(from_number: str, user_text_raw: str) -> dict:
         return {
             "texto": texto_final,
             "fotos": fotos_unicas[:MAX_FOTOS_POR_RESPUESTA],
-            "enviar_ubicacion": ubicacion_pedida
+            "enviar_ubicacion": ubicacion_pedida,
+            "tools_llamadas": tools_llamadas
         }
 
     except Exception as e:
@@ -1352,7 +1355,8 @@ def procesar_mensaje_con_agente(from_number: str, user_text_raw: str) -> dict:
         return {
             "texto": "Disculpa, estoy procesando mucha información. ¿Puedes repetir tu pregunta en unos segundos?",
             "fotos": [],
-            "enviar_ubicacion": False
+            "enviar_ubicacion": False,
+            "tools_llamadas": []
         }
 
 # ─── Leads y Mensajería WhatsApp ──────────────────────────────────────────────
@@ -1564,6 +1568,21 @@ def handle_text_message(from_number: str, user_text_raw: str):
             del clientes_nuevos_hoy[MAX_CLIENTES_NUEVOS:]
 
     resultado = procesar_mensaje_con_agente(from_number, user_text_raw)
+
+    # Guardar rendimiento: pregunta del cliente + respuesta del bot en el Sheet,
+    # pero SOLO cuando el agente usó una tool relevante (no en saludos o mensajes simples).
+    tools_usadas = resultado.get("tools_llamadas", [])
+    if tools_usadas:
+        tools_relevantes = {"detalle_vehiculo", "calcular_visa_cuotas",
+                            "contactar_asesor", "enviar_ubicacion"}
+        if tools_relevantes & set(tools_usadas):
+            respuesta_corta = resultado["texto"][:400].replace("\n", " ")
+            guardar_lead(
+                from_number,
+                f"[CLIENTE]: {user_text_raw[:200]} | [BOT]: {respuesta_corta} | "
+                f"[TOOLS]: {', '.join(tools_usadas)}",
+                "rendimiento_bot"
+            )
 
     # Orden: primero lo visual (foto/ubicación), después el texto que las complementa.
     for foto in resultado.get("fotos", []):
