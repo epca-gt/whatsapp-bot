@@ -1569,20 +1569,24 @@ def handle_text_message(from_number: str, user_text_raw: str):
 
     resultado = procesar_mensaje_con_agente(from_number, user_text_raw)
 
-    # Guardar rendimiento: pregunta del cliente + respuesta del bot en el Sheet,
-    # pero SOLO cuando el agente usó una tool relevante (no en saludos o mensajes simples).
+    # Resumen corto del rendimiento: tool usada + primeras palabras de la respuesta.
+    # No guarda saludos simples (respuesta < 80 chars sin tools).
     tools_usadas = resultado.get("tools_llamadas", [])
+    primera_linea = resultado["texto"].split("\n")[0][:80].strip()
+
     if tools_usadas:
-        tools_relevantes = {"detalle_vehiculo", "calcular_visa_cuotas",
-                            "contactar_asesor", "enviar_ubicacion"}
-        if tools_relevantes & set(tools_usadas):
-            respuesta_corta = resultado["texto"][:400].replace("\n", " ")
-            guardar_lead(
-                from_number,
-                f"[CLIENTE]: {user_text_raw[:200]} | [BOT]: {respuesta_corta} | "
-                f"[TOOLS]: {', '.join(tools_usadas)}",
-                "rendimiento_bot"
-            )
+        resumen_tool = ", ".join(tools_usadas)
+        guardar_lead(
+            from_number,
+            f"Bot respondió [{resumen_tool}]: {primera_linea}",
+            "rendimiento_bot"
+        )
+    elif len(resultado["texto"]) > 100:
+        guardar_lead(
+            from_number,
+            f"Bot respondió [sin tool]: {primera_linea}",
+            "rendimiento_bot"
+        )
 
     # Orden: primero lo visual (foto/ubicación), después el texto que las complementa.
     for foto in resultado.get("fotos", []):
