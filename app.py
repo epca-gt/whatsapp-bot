@@ -1150,6 +1150,13 @@ SYSTEM_PROMPT_TEXT = (
     "4. Usá 'calcular_visa_cuotas' para TODA pregunta de cuotas, mensualidades, financiamiento o "
     "pagos mixtos. Jamás calcules montos, recargos ni divisiones de cabeza.\n"
 
+    "4a. TABLA DE RECARGOS VISA CUOTAS (estos son los únicos porcentajes correctos — "
+    "NUNCA inventes ni adivines otros):\n"
+    "  3 cuotas → 10% | 6 cuotas → 10% | 9 cuotas → 11% | 12 cuotas → 12%\n"
+    "  18 cuotas → 18% | 24 cuotas → 24% | 36 cuotas → 27% | 48 cuotas → 36%\n"
+    "Si el cliente pregunta por los recargos o porcentajes EN GENERAL (sin mencionar un vehículo), "
+    "respondé únicamente con esta tabla exacta. NUNCA respondas porcentajes de memoria.\n"
+
     "4b. PAGOS MIXTOS: es muy común que el cliente pague una parte al contado y solo el resto con "
     "Visa Cuotas. Si dice 'doy X de prima', mandá X en 'pago_contado'. Si dice 'quiero pasar solo X "
     "por la tarjeta', mandá X en 'monto_a_tarjeta'. El recargo solo aplica a la parte de tarjeta, "
